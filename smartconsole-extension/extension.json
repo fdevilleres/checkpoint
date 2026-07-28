@@ -1,0 +1,28 @@
+{
+  "extension": {
+    "name": "Advisory Watch",
+    "product-url": "https://github.com/fdevilleres/checkpoint",
+    "provider": "ferdy.devilleres@gmail.com",
+    "version": "1.0",
+    "extension-version-requirements": {
+      "minimum-version": "1.2"
+    }
+  },
+  "locations": [
+    {
+      "location": "details-pane",
+      "relevant-types": ["gateways"],
+      "ui-element": {
+        "type": "tab",
+        "caption": "Advisories",
+        "tooltip": "Show CVE advisories matched to this gateway by advisory-watch",
+        "action": {
+          "details-level": "standard",
+          "method": "get",
+          "trigger-id": "gateways-details-pane",
+          "url": "index.html"
+        }
+      }
+    }
+  ]
+}

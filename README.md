@@ -60,6 +60,36 @@ not the vendor's entire ~25-year CVE history.
 4. Optional: redirect output to a log file so you can spot-check runs
    (`Arguments: /c python main.py check >> check.log 2>&1`, Program: `cmd`)
 
+## SmartConsole dashboard extension
+
+`main.py check` also now records full match results (not just seen/unseen) into `state.json`,
+keyed by CVE ID with which gateway UIDs they matched. `server.py` serves that data as a small
+read-only local API, plus a real Check Point **SmartConsole Extension** (`smartconsole-extension/`)
+that adds an "Advisories" tab under each gateway's properties, showing exactly what's already
+matched to it — no email needed to see it.
+
+```bash
+python server.py
+# Serving SmartConsole extension + API on https://127.0.0.1:5443
+```
+
+Then in SmartConsole: **Global Properties → Extensions** (or the extensions manager for your
+version — see the [SmartConsole Extension Developer Guide](https://sc1.checkpoint.com/documents/SmartConsole/Extensions/index.html))
+→ install by pasting the manifest URL: `https://127.0.0.1:5443/extension.json`. Select any
+gateway and open its new **Advisories** tab.
+
+Notes:
+- `server.py` needs to be running (as a standing background process) whenever you want the tab
+  to load — it's separate from the weekly `check` Task Scheduler job. Not yet wired into Task
+  Scheduler ("run at logon") — a manual `python server.py` for now.
+- It's read-only end to end: the extension only reads `state.json` through the local API. It
+  never talks to Gmail or the Management API itself, and requests no special SmartConsole
+  permissions (verified against the official docs and the `show-gateways-interfaces` reference
+  example in [CheckPointSW/smart-console-extensions](https://github.com/CheckPointSW/smart-console-extensions)).
+- Uses a self-signed HTTPS cert (`ssl_context='adhoc'`) — explicitly allowed per the docs, but
+  this hasn't been tested inside a real SmartConsole client yet. If installation or the tab
+  doesn't work as expected, that's the one part to debug first.
+
 ## Design notes
 
 - `cp_client.py` / gateway-listing logic is shared in spirit with `../posture-report` — same

@@ -178,7 +178,7 @@ def cmd_send_draft(cve_id: str, to_addrs: list[str] | None) -> None:
     client = _build_client()
     gateways = list_gateways(client, TARGET_NAME) if client else []
     results = matcher.match([adv], gateways, _keywords())
-    if not results:
+    if not results or results[0].resolved_not_applicable:
         print(f"ERROR: {cve_id} no longer matches any gateway/keyword — nothing to send.", file=sys.stderr)
         sys.exit(1)
 
@@ -194,6 +194,14 @@ def _process_results(results: list[matcher.MatchResult], state: dict, dry_run: b
 
     gmail_creds = _gmail_creds()
     for result in results:
+        if result.resolved_not_applicable:
+            # Confidently ruled out for every current gateway — record for dashboard
+            # visibility, but there's nothing to draft or send an email about.
+            store.mark_seen(state, result.advisory.cve_id)
+            store.record_result(state, result)
+            print(f"Resolved (not applicable to any gateway): {result.advisory.cve_id}")
+            continue
+
         subject = drafter.subject_for(result)
         if dry_run:
             print(f"\n[DRY RUN] Would draft: {subject}")
@@ -207,6 +215,7 @@ def _process_results(results: list[matcher.MatchResult], state: dict, dry_run: b
             drafter.create_gmail_draft(result, address, app_password)
             print(f"Drafted: {subject}")
         store.mark_seen(state, result.advisory.cve_id)
+        store.record_result(state, result)
 
 
 def main() -> None:

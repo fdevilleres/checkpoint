@@ -38,6 +38,7 @@ class MatchResult:
     advisory: Advisory
     matched_gateways: list[Gateway] = field(default_factory=list)
     needs_review: bool = False
+    resolved_not_applicable: bool = False
 
 
 def _version_tuple(version: str) -> tuple[int, ...] | None:
@@ -119,5 +120,11 @@ def match(advisories: list[Advisory], gateways: list[Gateway], keywords: list[st
                 matched_gateways=matched,
                 needs_review=(undetermined and not matched) or uncertain_product,
             ))
+        else:
+            # Real CPE version data existed and every gateway definitively fell
+            # outside the vulnerable range(s) — not "unclear," a confident "does
+            # not apply here." Worth recording as resolved so it's visible in the
+            # dashboard, rather than silently vanishing.
+            results.append(MatchResult(advisory=adv, matched_gateways=[], resolved_not_applicable=True))
 
     return results

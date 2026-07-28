@@ -1,0 +1,42 @@
+body {
+  font-family: -apple-system, Segoe UI, Arial, sans-serif;
+  font-size: 12px;
+  margin: 8px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th, td {
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 1px solid #ddd;
+  vertical-align: top;
+}
+
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: #fff;
+  font-size: 11px;
+  margin-right: 4px;
+}
+
+.badge-critical { background: #b00020; }
+.badge-high { background: #d9534f; }
+.badge-medium { background: #e0a800; }
+.badge-low { background: #6c757d; }
+.badge-kev { background: #7a1fa2; }
+.badge-review { background: #b06a00; }
+.badge-resolved { background: #2e7d32; }
+
+a { color: #0057b8; }
+
+details summary {
+  cursor: pointer;
+  font-weight: bold;
+  margin-top: 8px;
+}

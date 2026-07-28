@@ -1,6 +1,7 @@
 .env
 state.json
 check.log
+server.log
 __pycache__/
 *.pyc
 run_output.txt

@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <title>Advisory Watch</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+
+  <body onload="showContext()">
+    <script src="advisories.js"></script>
+    <p id="loader-text">Loading...</p>
+
+    <div id="matched-section" style="display: none">
+      <h3>Matched to this gateway</h3>
+      <table id="matchedTable">
+        <tr>
+          <th>CVE</th>
+          <th>Severity</th>
+          <th>Status</th>
+          <th>Summary</th>
+          <th>Source</th>
+        </tr>
+      </table>
+    </div>
+    <p id="matched-empty-message" style="display: none">No advisories matched to this gateway.</p>
+
+    <div id="unassigned-section" style="display: none">
+      <h3>Needs manual review (not tied to a specific gateway)</h3>
+      <table id="unassignedTable">
+        <tr>
+          <th>CVE</th>
+          <th>Severity</th>
+          <th>Status</th>
+          <th>Summary</th>
+          <th>Source</th>
+        </tr>
+      </table>
+    </div>
+
+    <details id="resolved-section" style="display: none">
+      <summary>Resolved — checked, not applicable to this gateway</summary>
+      <table id="resolvedTable">
+        <tr>
+          <th>CVE</th>
+          <th>Severity</th>
+          <th>Status</th>
+          <th>Summary</th>
+          <th>Source</th>
+        </tr>
+      </table>
+    </details>
+  </body>
+</html>
