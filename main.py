@@ -24,6 +24,7 @@ load_dotenv()
 
 from cp_client import CPClient, CPTarget
 from assets import list_gateways
+import cpadvisories
 import feeds
 import matcher
 import drafter
@@ -62,6 +63,16 @@ def _nvd_cpe_vendors() -> list[str]:
     return [v.strip() for v in raw.split(",") if v.strip()]
 
 
+def _cp_advisory_products() -> tuple[str, ...] | None:
+    """Overrides cpadvisories.DEFAULT_RELEVANT_PRODUCTS when set -- which product
+    lines from Check Point's advisory feed count as relevant to this tool's
+    gateway/management inventory."""
+    raw = os.getenv("CP_ADVISORY_PRODUCTS", "").strip()
+    if not raw:
+        return None
+    return tuple(p.strip() for p in raw.split(",") if p.strip())
+
+
 FIRST_RUN_LOOKBACK_DAYS = 90
 
 
@@ -69,6 +80,35 @@ def _gmail_creds() -> tuple[str, str] | None:
     address = os.getenv("GMAIL_ADDRESS", "").strip()
     app_password = os.getenv("GMAIL_APP_PASSWORD", "").strip()
     return (address, app_password) if address and app_password else None
+
+
+def _hotfix_check_enabled() -> bool:
+    """ENABLE_HOTFIX_CHECK is off by default. When on, matcher.match() runs a bounded
+    read-only diagnostic (run-script -> cpinfo) against real gateways to compare their
+    installed Jumbo Hotfix Take against Check Point's own published fix guidance --
+    the one part of this tool that executes something on production infrastructure
+    rather than just reading metadata. See README's "Patch-level matching" section."""
+    return os.getenv("ENABLE_HOTFIX_CHECK", "").strip().lower() in ("1", "true", "yes")
+
+
+def _cp_advisory_to_advisory(fix: cpadvisories.AdvisoryFix) -> feeds.Advisory:
+    """Converts a cpadvisories.AdvisoryFix (Check Point's own structured feed) into
+    the same feeds.Advisory shape used everywhere else in the pipeline, carrying the
+    structured product/Take rows through via cp_advisory_rows so matcher.py's
+    top-priority path can use them."""
+    return feeds.Advisory(
+        cve_id=fix.cve_id,
+        title=fix.cve_id,
+        summary=fix.summary,
+        source_url=fix.sk_url,
+        source="cp_advisory",
+        severity=fix.cp_severity,
+        cvss=fix.cvss,
+        published=fix.published,
+        cp_advisory_rows=fix.rows,
+        cp_severity=fix.cp_severity,
+        sk_id=fix.sk_id,
+    )
 
 
 def cmd_check(dry_run: bool) -> None:
@@ -114,10 +154,31 @@ def cmd_check(dry_run: bool) -> None:
     for a in enriched_kev:
         all_advisories[a.cve_id] = a  # KEV flag / detail takes precedence
 
+    print("Fetching Check Point's own structured Security Advisories feed…")
+    kev_cve_ids = {a.cve_id for a in kev_advisories}
+    cp_fixes = cpadvisories.fetch_all()
+    cp_since = store.get_last_checked(state, "cp_advisories")
+    if not cp_since:
+        # Same reasoning as the NVD first-run window: this feed has no server-side
+        # "since" filter (fetch_all always returns the full active catalog), so on a
+        # first run we'd otherwise treat all ~150 existing advisories as "new" and
+        # draft/email every one of them at once. Filter to a recent window instead —
+        # subsequent runs rely on seen_cve_ids for incremental behavior, not this.
+        cp_since = (datetime.now(timezone.utc) - timedelta(days=FIRST_RUN_LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%S.000")
+        print(f"First run for Check Point's advisory feed — filtering to the last {FIRST_RUN_LOOKBACK_DAYS} days.")
+    cp_fixes = [f for f in cp_fixes if (f.updated or f.published or "0") >= cp_since]
+    print(f"  {len(cp_fixes)} matching entr(y/ies)")
+    for fix in cp_fixes:
+        cp_adv = _cp_advisory_to_advisory(fix)
+        cp_adv.kev = fix.cve_id in kev_cve_ids
+        all_advisories[fix.cve_id] = cp_adv  # Check Point's own structured data takes precedence
+
     new_advisories = [a for a in all_advisories.values() if not store.is_seen(state, a.cve_id)]
     print(f"{len(new_advisories)} new advisory(ies) to evaluate (of {len(all_advisories)} total fetched).")
 
-    results = matcher.match(new_advisories, gateways, keywords)
+    results = matcher.match(new_advisories, gateways, keywords,
+                             client=client, target=TARGET_NAME, enable_hotfix_check=_hotfix_check_enabled(),
+                             cp_relevant_products=_cp_advisory_products())
     _process_results(results, state, dry_run)
 
     if dry_run:
@@ -125,6 +186,7 @@ def cmd_check(dry_run: bool) -> None:
         return
 
     store.set_last_checked(state, "nvd")
+    store.set_last_checked(state, "cp_advisories")
     store.save(state)
 
 
@@ -143,7 +205,9 @@ def cmd_add_advisory(source: str, dry_run: bool) -> None:
         print(f"Already processed ({adv.cve_id}). Skipping.")
         return
 
-    results = matcher.match([adv], gateways, keywords)
+    results = matcher.match([adv], gateways, keywords,
+                             client=client, target=TARGET_NAME, enable_hotfix_check=_hotfix_check_enabled(),
+                             cp_relevant_products=_cp_advisory_products())
     _process_results(results, state, dry_run)
 
     if dry_run:
@@ -177,7 +241,9 @@ def cmd_send_draft(cve_id: str, to_addrs: list[str] | None) -> None:
 
     client = _build_client()
     gateways = list_gateways(client, TARGET_NAME) if client else []
-    results = matcher.match([adv], gateways, _keywords())
+    results = matcher.match([adv], gateways, _keywords(),
+                             client=client, target=TARGET_NAME, enable_hotfix_check=_hotfix_check_enabled(),
+                             cp_relevant_products=_cp_advisory_products())
     if not results or results[0].resolved_not_applicable:
         print(f"ERROR: {cve_id} no longer matches any gateway/keyword — nothing to send.", file=sys.stderr)
         sys.exit(1)

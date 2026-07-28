@@ -61,6 +61,16 @@ def record_result(state: dict, result) -> None:
         "needs_review": result.needs_review,
         "resolved_not_applicable": result.resolved_not_applicable,
         "matched_gateway_uids": [gw.uid for gw in result.matched_gateways],
+        "sk_url": result.sk_url,
+        # {gateway uid: [installed_take, required_take]} -- only populated when a
+        # Take-based path (matcher._match_via_cp_advisory / _match_via_sk) confirmed
+        # a patch gap.
+        "gateway_take_gap": {uid: list(pair) for uid, pair in result.gateway_take_gap.items()},
+        # Gateways in matched_gateways with NO Take that fixes them (EOS version) --
+        # needs an upgrade, not a hotfix install.
+        "eos_gateway_uids": sorted(result.eos_gateway_uids),
+        "cp_severity": adv.cp_severity,
+        "sk_id": adv.sk_id,
     }
 
 

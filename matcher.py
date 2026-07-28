@@ -14,6 +14,11 @@ from dataclasses import dataclass, field
 
 from assets import Gateway
 from feeds import Advisory, CpeRange
+import cpadvisories
+import hotfix
+import skfix
+
+_CP_RELEVANT_PRODUCTS_LOWER = {p.lower() for p in cpadvisories.DEFAULT_RELEVANT_PRODUCTS}
 
 _NUM_RE = re.compile(r"\d+")
 
@@ -39,6 +44,13 @@ class MatchResult:
     matched_gateways: list[Gateway] = field(default_factory=list)
     needs_review: bool = False
     resolved_not_applicable: bool = False
+    sk_url: str | None = None
+    # gateway uid -> (installed_take, required_take), only populated for the
+    # sk-article/Take-based path -- lets drafter.py show the precise patch gap.
+    gateway_take_gap: dict[str, tuple[int, int]] = field(default_factory=dict)
+    # subset of matched_gateways with no Take fix at all (EOS version) -- needs an
+    # upgrade, not a hotfix install; drafter.py renders these with a different message.
+    eos_gateway_uids: set[str] = field(default_factory=set)
 
 
 def _version_tuple(version: str) -> tuple[int, ...] | None:
@@ -86,9 +98,169 @@ def _version_in_range(gw_version: str, cpe: CpeRange) -> bool | None:
     return True if has_bound else None
 
 
-def match(advisories: list[Advisory], gateways: list[Gateway], keywords: list[str]) -> list[MatchResult]:
+def _match_via_cp_advisory(adv: Advisory, gateways: list[Gateway], client, target: str | None,
+                            enable_hotfix_check: bool, take_cache: dict[str, int | None],
+                            relevant_products_lower: set[str] = _CP_RELEVANT_PRODUCTS_LOWER) -> MatchResult | None:
+    """Top-priority path: Check Point's own structured Security Advisories API
+    (cpadvisories.py) gives exact per-version Take cutoffs -- far more precise and
+    reliable to fetch than scraping individual sk articles (no WAF-challenge risk,
+    confirmed live). Returns None if this advisory has no usable rows for this
+    gateway inventory, so the caller falls through to sk-scraping / the CPE heuristic.
+
+    A gateway version with no matching row in this advisory's table is treated as
+    "not yet assessed" (contributes nothing either way), not "confirmed clean" --
+    Check Point actively extends these tables to newer versions over time, confirmed
+    live by comparing `updated` timestamps against which version rows exist.
+    """
+    relevant = [r for r in adv.cp_advisory_rows if r.product_name.lower() in relevant_products_lower]
+    if not relevant:
+        return None
+
+    rows_by_version: dict[str, list] = {}
+    for r in relevant:
+        rows_by_version.setdefault(r.version, []).append(r)
+
+    vulnerable: list[Gateway] = []
+    eos_uids: set[str] = set()
+    take_gap: dict[str, tuple[int, int]] = {}
+    any_ambiguous = False
+    any_never = False
+
+    for gw in gateways:
+        gw_version = (gw.version or "").upper().strip()
+        rows = rows_by_version.get(gw_version) if gw_version else None
+        if not rows:
+            continue
+
+        gw_vulnerable = gw_ambiguous = gw_never = False
+        for row in rows:
+            if row.status == cpadvisories.RowStatus.NEVER_VULNERABLE:
+                gw_never = True
+            elif row.status == cpadvisories.RowStatus.ALWAYS_VULNERABLE:
+                gw_vulnerable = True
+                eos_uids.add(gw.uid)
+            elif row.status == cpadvisories.RowStatus.TAKE_BOUNDED:
+                if enable_hotfix_check and client is not None and target:
+                    if gw.uid not in take_cache:
+                        take_cache[gw.uid] = hotfix.get_installed_jhf_take(client, target, gw.name)
+                    installed = take_cache[gw.uid]
+                    if installed is None:
+                        gw_ambiguous = True
+                    elif installed <= row.max_vulnerable_take:
+                        gw_vulnerable = True
+                        take_gap[gw.uid] = (installed, row.max_vulnerable_take + 1)
+                    # else: installed > max_vulnerable_take -> already patched
+                else:
+                    gw_ambiguous = True
+            else:  # NEEDS_MANUAL_CHECK
+                gw_ambiguous = True
+
+        if gw_vulnerable:
+            vulnerable.append(gw)
+        elif gw_ambiguous:
+            any_ambiguous = True
+        elif gw_never:
+            any_never = True
+
+    if not vulnerable and not any_ambiguous and not any_never:
+        # This advisory does cover gateway/management-relevant products (checked via
+        # `relevant` above) -- it just has no row for any current gateway's exact
+        # version yet. That's still real, useful context (a genuine Check Point
+        # advisory exists for this CVE) worth surfacing with its sk_url, rather than
+        # returning None and letting the caller fall through to a generic fallback
+        # that has no idea this CVE is even Check Point-relevant.
+        return MatchResult(advisory=adv, matched_gateways=[], needs_review=True, sk_url=adv.source_url)
+
+    return MatchResult(
+        advisory=adv,
+        matched_gateways=vulnerable,
+        needs_review=any_ambiguous and not vulnerable,
+        resolved_not_applicable=(not vulnerable and not any_ambiguous and any_never),
+        sk_url=adv.source_url,
+        gateway_take_gap=take_gap,
+        eos_gateway_uids=eos_uids,
+    )
+
+
+def _match_via_sk(adv: Advisory, gateways: list[Gateway], client, target: str,
+                   take_cache: dict[str, int | None]) -> MatchResult | None:
+    """Authoritative path: Check Point's own sk article says exactly which JHF Take
+    fixes this CVE per version branch, and a bounded read-only diagnostic (hotfix.py)
+    reports what's actually installed. Returns None if no linked sk article yielded
+    usable Take data -- caller should fall back to the CPE-range heuristic instead
+    of guessing from this path.
+    """
+    sk_info = None
+    for url in adv.checkpoint_sk_urls:
+        info = skfix.fetch_sk_fix_info(url)
+        if info and info.required_takes:
+            sk_info = info
+            break
+    if sk_info is None:
+        return None
+
+    vulnerable = []
+    take_gap: dict[str, tuple[int, int]] = {}
+    any_ambiguous = False
+    for gw in gateways:
+        gw_version = (gw.version or "").upper().strip()
+        if not gw_version:
+            continue
+        if gw_version in sk_info.required_takes:
+            required = sk_info.required_takes[gw_version]
+            if gw.uid not in take_cache:
+                take_cache[gw.uid] = hotfix.get_installed_jhf_take(client, target, gw.name)
+            installed = take_cache[gw.uid]
+            if installed is None:
+                any_ambiguous = True
+            elif installed < required:
+                vulnerable.append(gw)
+                take_gap[gw.uid] = (installed, required)
+            # else: installed >= required -> already patched, no action for this gateway
+        elif gw_version in sk_info.affected_versions:
+            # In scope per Check Point's own metadata, but this article gives no
+            # Take number for this specific version branch -- genuinely ambiguous,
+            # not something to guess at.
+            any_ambiguous = True
+        # else: gw_version isn't even in this advisory's affected-version list --
+        # Check Point's own data says this gateway is out of scope for this CVE.
+
+    return MatchResult(
+        advisory=adv,
+        matched_gateways=vulnerable,
+        needs_review=any_ambiguous and not vulnerable,
+        resolved_not_applicable=not vulnerable and not any_ambiguous,
+        sk_url=sk_info.sk_url,
+        gateway_take_gap=take_gap,
+    )
+
+
+def match(advisories: list[Advisory], gateways: list[Gateway], keywords: list[str],
+          *, client=None, target: str | None = None, enable_hotfix_check: bool = False,
+          cp_relevant_products: tuple[str, ...] | None = None) -> list[MatchResult]:
+    take_cache: dict[str, int | None] = {}
+    relevant_products_lower = (
+        {p.lower() for p in cp_relevant_products} if cp_relevant_products else _CP_RELEVANT_PRODUCTS_LOWER
+    )
     results = []
     for adv in advisories:
+        if adv.cp_advisory_rows:
+            cp_result = _match_via_cp_advisory(adv, gateways, client, target, enable_hotfix_check, take_cache,
+                                                relevant_products_lower)
+            if cp_result is not None:
+                results.append(cp_result)
+                continue
+            # Check Point's own advisory feed had this CVE, but no row covered any
+            # current gateway version -- fall through same as any other advisory.
+
+        if enable_hotfix_check and adv.checkpoint_sk_urls and client is not None and target:
+            sk_result = _match_via_sk(adv, gateways, client, target, take_cache)
+            if sk_result is not None:
+                results.append(sk_result)
+                continue
+            # sk article(s) linked but none yielded usable Take data -- fall through
+            # to the CPE-range heuristic below, same as an advisory with no sk link.
+
         cp_ranges = [r for r in adv.cpe_ranges if _is_checkpoint_cpe(r, keywords)]
 
         if adv.source == "manual" or not cp_ranges:

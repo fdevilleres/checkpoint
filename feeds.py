@@ -1,5 +1,8 @@
-"""Fetches vendor security advisories from public feeds, plus manual ingestion for
-Check Point's own sk-article advisories (no public feed exists for those)."""
+"""Fetches vendor security advisories from public feeds: CISA KEV and NVD. Also
+supports manual ingestion of a specific Check Point sk-article (fetch_manual) for
+cases the automated feeds miss. Check Point's own structured advisory data --
+per-version Jumbo Hotfix Take cutoffs -- lives in cpadvisories.py, sourced from their
+public Security Advisories API rather than scraped from individual sk pages."""
 
 from __future__ import annotations
 import json
@@ -12,6 +15,7 @@ KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulner
 NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 
 _CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}")
+_SK_URL_RE = re.compile(r"support\.checkpoint\.com/results/sk/(sk\d+)", re.IGNORECASE)
 
 
 @dataclass
@@ -30,13 +34,20 @@ class Advisory:
     title: str
     summary: str
     source_url: str
-    source: str  # "kev" | "nvd" | "manual"
+    source: str  # "kev" | "nvd" | "manual" | "cp_advisory"
     severity: str = ""
     cvss: float | None = None
     kev: bool = False
     published: str = ""
     cpe_ranges: list[CpeRange] = field(default_factory=list)
     raw_text: str = ""  # populated for manual advisories the matcher can't parse
+    checkpoint_sk_urls: list[str] = field(default_factory=list)  # linked Check Point sk articles
+    # list[cpadvisories.ProductRow] -- populated when this Advisory was built from
+    # Check Point's own structured Security Advisories API (see cpadvisories.py).
+    # Not typed against that module here to keep feeds.py dependency-free.
+    cp_advisory_rows: list = field(default_factory=list)
+    cp_severity: str = ""
+    sk_id: str = ""
 
 
 def _http_get_json(url: str, headers: dict | None = None) -> dict:
@@ -125,12 +136,30 @@ def fetch_nvd(cpe_vendors: list[str], since: str | None = None, api_key: str | N
                     cvss=cvss,
                     published=cve.get("published", ""),
                     cpe_ranges=cpe_ranges,
+                    checkpoint_sk_urls=_extract_sk_urls(cve.get("references", [])),
                 )
             total = data.get("totalResults", len(items))
             start_index += len(items)
             if start_index >= total or not items:
                 break
     return list(advisories.values())
+
+
+def _extract_sk_urls(references: list) -> list[str]:
+    """Pulls Check Point sk-article URLs out of an NVD CVE's references array. NVD
+    consistently links the vendor's own advisory for well-documented CVEs (confirmed
+    live on CVE-2024-24919 -> sk182336, tagged Patch/Vendor Advisory) — this is what
+    lets us go from "NVD says this CVE exists" to "here's Check Point's own fix
+    guidance" without needing SupportCenter login or scraping a search UI."""
+    seen = set()
+    urls = []
+    for ref in references or []:
+        url = ref.get("url", "")
+        m = _SK_URL_RE.search(url)
+        if m and m.group(1) not in seen:
+            seen.add(m.group(1))
+            urls.append(f"https://support.checkpoint.com/results/sk/{m.group(1)}")
+    return urls
 
 
 def _extract_cvss(metrics: dict) -> tuple[float | None, str]:
@@ -194,6 +223,7 @@ def fetch_nvd_by_id(cve_id: str, api_key: str | None = None) -> Advisory | None:
         cvss=cvss,
         published=cve.get("published", ""),
         cpe_ranges=_extract_cpe_ranges(cve.get("configurations", [])),
+        checkpoint_sk_urls=_extract_sk_urls(cve.get("references", [])),
     )
 
 

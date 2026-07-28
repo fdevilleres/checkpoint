@@ -31,7 +31,16 @@ def render_body(result: MatchResult) -> str:
     if result.matched_gateways:
         for gw in result.matched_gateways:
             blades = ", ".join(gw.blades) if gw.blades else "none listed"
-            lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}, blades: {blades}")
+            gap = result.gateway_take_gap.get(gw.uid)
+            if gw.uid in result.eos_gateway_uids:
+                lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}: "
+                              f"end-of-support version, no Jumbo Hotfix fixes this — upgrade required")
+            elif gap:
+                installed, required = gap
+                lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}: "
+                              f"Take {installed} installed, Take {required} required — patch needed")
+            else:
+                lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}, blades: {blades}")
     elif result.needs_review:
         lines.append("- Could not be automatically matched to a gateway version — "
                       "verify manually against the inventory below the fold.")
@@ -40,7 +49,13 @@ def render_body(result: MatchResult) -> str:
     lines.append("")
 
     lines.append("## Recommended action")
-    if result.matched_gateways:
+    if result.eos_gateway_uids:
+        lines.append("- These gateways are on an end-of-support version with no available Jumbo "
+                      "Hotfix fix — plan an upgrade to a supported version.")
+    elif result.gateway_take_gap:
+        lines.append("- Install the required Jumbo Hotfix Accumulator Take (see Check Point's "
+                      "fix advisory below) on the affected gateways.")
+    elif result.matched_gateways:
         lines.append("- Check the vendor advisory below for the fixed version / hotfix, "
                       "and schedule an upgrade or hotfix install on the affected gateways.")
     else:
@@ -50,6 +65,8 @@ def render_body(result: MatchResult) -> str:
 
     lines.append("## Source")
     lines.append(adv.source_url or "(manually provided)")
+    if result.sk_url:
+        lines.append(f"Check Point fix advisory: {result.sk_url}")
     if adv.source == "manual" and adv.raw_text and adv.raw_text != adv.summary:
         lines.append("")
         lines.append("## Raw advisory text")
