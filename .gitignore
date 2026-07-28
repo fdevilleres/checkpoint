@@ -1,0 +1,6 @@
+.env
+state.json
+check.log
+__pycache__/
+*.pyc
+run_output.txt
