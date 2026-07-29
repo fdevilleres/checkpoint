@@ -82,6 +82,16 @@ def _gmail_creds() -> tuple[str, str] | None:
     return (address, app_password) if address and app_password else None
 
 
+def _nvd_cpe_lookup(cve_id: str) -> list[feeds.CpeRange]:
+    """Lazy secondary source for matcher.match(): a cp_advisory-sourced Advisory
+    carries no CPE data of its own, so when Check Point's own feed has no version
+    row for a gateway yet, this gives the matcher an independent shot at resolving
+    it via NVD's CPE ranges instead of settling for a context-free needs_review."""
+    nvd_api_key = os.getenv("NVD_API_KEY", "").strip() or None
+    detail = feeds.fetch_nvd_by_id(cve_id, api_key=nvd_api_key)
+    return detail.cpe_ranges if detail else []
+
+
 def _hotfix_check_enabled() -> bool:
     """ENABLE_HOTFIX_CHECK is off by default. When on, matcher.match() runs a bounded
     read-only diagnostic (run-script -> cpinfo) against real gateways to compare their
@@ -198,7 +208,7 @@ def cmd_check(dry_run: bool) -> None:
 
     results = matcher.match(new_advisories, gateways, keywords,
                              client=client, target=TARGET_NAME, enable_hotfix_check=_hotfix_check_enabled(),
-                             cp_relevant_products=_cp_advisory_products())
+                             cp_relevant_products=_cp_advisory_products(), nvd_cpe_lookup=_nvd_cpe_lookup)
     _process_results(results, state, dry_run)
 
     # A CVE marked "seen" was matched against the gateway inventory *at the time it
@@ -210,7 +220,7 @@ def cmd_check(dry_run: bool) -> None:
     if already_seen_advisories:
         refreshed = matcher.match(already_seen_advisories, gateways, keywords,
                                    client=client, target=TARGET_NAME, enable_hotfix_check=_hotfix_check_enabled(),
-                                   cp_relevant_products=_cp_advisory_products())
+                                   cp_relevant_products=_cp_advisory_products(), nvd_cpe_lookup=_nvd_cpe_lookup)
         newly_relevant = [r for r in refreshed if r.matched_gateways]
         tail = " (no new email sent, these are already seen)" if newly_relevant else ""
         print(f"Re-checked {len(refreshed)} already-seen advisory(ies) against the current gateway "
