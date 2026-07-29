@@ -93,11 +93,11 @@ def _nvd_cpe_lookup(cve_id: str) -> list[feeds.CpeRange]:
 
 
 def _hotfix_check_enabled() -> bool:
-    """ENABLE_HOTFIX_CHECK is off by default. When on, matcher.match() runs a bounded
-    read-only diagnostic (run-script -> cpinfo) against real gateways to compare their
-    installed Jumbo Hotfix Take against Check Point's own published fix guidance --
-    the one part of this tool that executes something on production infrastructure
-    rather than just reading metadata. See README's "Patch-level matching" section."""
+    """ENABLE_HOTFIX_CHECK is off by default. When on, matcher.match() queries
+    show-software-packages-per-targets to compare each gateway's installed Jumbo
+    Hotfix Take against Check Point's own published fix guidance -- a read-only
+    query against the management server; nothing executes on the gateway itself.
+    See README's "Patch-level matching" section."""
     return os.getenv("ENABLE_HOTFIX_CHECK", "").strip().lower() in ("1", "true", "yes")
 
 

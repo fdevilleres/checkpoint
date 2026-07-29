@@ -31,9 +31,9 @@ far more precise than NVD's CPE version ranges, and unlike scraping individual s
 1. **Check Point's feed → required Take**: for each gateway version present in the advisory's
    product table, `matcher.py` knows the exact Take that fixes it (or that the version is
    end-of-support with no Take that helps, or explicitly not affected at all).
-2. **Gateway → installed Take** *(opt-in, see below)*: `hotfix.py` runs a bounded (25s timeout),
-   read-only diagnostic (`fw ver` + `cpinfo -y all`) on the real gateway/management server via the
-   Management API's `run-script` command, and parses the actually-installed JHF Take number.
+2. **Gateway → installed Take** *(opt-in, see below)*: `hotfix.py` queries the Management API's
+   `show-software-packages-per-targets` — a read-only lookup against the management server itself,
+   nothing executes on the gateway — and parses the actually-installed JHF Take number.
 3. **Compare**: installed Take below what's required → a confirmed patch gap (shown in the
    email/dashboard as e.g. *"Take 20 installed, Take 65 required — patch needed"*, with a direct
    link to Check Point's fix advisory). An end-of-support version gets a distinct "no Take fixes
@@ -44,9 +44,9 @@ far more precise than NVD's CPE version ranges, and unlike scraping individual s
 (confirmed live: rows exist for `R82`/`R82.10` on advisories that don't yet cover a newer `R82.20`
 gateway). Only an explicit "not affected" entry resolves an advisory as not applicable.
 
-**`ENABLE_HOTFIX_CHECK=true` in `.env` is still opt-in and off by default** — but now it *only*
-gates step 2, the `run-script` diagnostic, since that's the one thing in this tool that executes a
-command on your real infrastructure. Everything else above (fetching the advisory feed, knowing
+**`ENABLE_HOTFIX_CHECK=true` in `.env` is off by default** — it gates step 2, the installed-Take
+lookup, since that's the one thing in this tool that queries per-gateway state on your real
+management server rather than public feed data. Everything else above (fetching the advisory feed, knowing
 the required Take, flagging end-of-support versions) runs by default. With the feature off, a
 known Take-based gap still shows up as "needs review" with the required Take number, rather than
 being silently skipped — you just won't get the automatic yes/no against what's actually

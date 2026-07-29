@@ -1,100 +1,53 @@
-"""Runs a bounded, read-only diagnostic on a real gateway/management server via the
-Check Point Management API's run-script command, to determine its actually-installed
-Jumbo Hotfix Accumulator (JHF) Take number.
+"""Determines a gateway's actually-installed Jumbo Hotfix Accumulator (JHF) Take
+via the Check Point Management API's show-software-packages-per-targets -- a
+pure read-only query against the management server itself (nothing executes on
+the gateway), gated behind ENABLE_HOTFIX_CHECK in .env (default off).
 
-This is the one part of advisory-watch that executes something on production
-infrastructure rather than just reading metadata -- gated behind ENABLE_HOTFIX_CHECK
-in .env (default off). Confirmed live against a real gateway: correctly reports
-Take 20 for a box running "HOTFIX_R82_20_T313_EA_JHF_MAIN Take: 20"."""
+Replaces an earlier run-script + cpinfo-scraping approach. Cross-checked live
+against three real gateways: agreed exactly in all three cases (two reporting
+no installed hotfix, one reporting Take 20)."""
 
 from __future__ import annotations
-import base64
 import re
-import time
 
 from cp_client import CPClient
 
-# Bounded and read-only: times out after 25s, and the line cap is generous enough to
-# comfortably include the [FW1]/[MGMT] sections even on a heavily hotfixed box.
-_SCRIPT = """
-echo "=== fw ver ==="
-fw ver 2>&1
-echo "=== installed hotfixes (bounded cpinfo scan) ==="
-timeout 25 cpinfo -y all 2>&1 | head -150
-"""
+# The Take number is the last underscore-delimited token before the file
+# extension, e.g. "..._JHF_MAIN_Bundle_aarch64_T20_FULL.tgz" -> 20. Earlier
+# T<digits> tokens in the same package-id can be unrelated build/EA tags (e.g.
+# "T313" in "Check_Point_R82_20_T313_EA_JHF_MAIN_Bundle_..._T20_FULL.tgz"),
+# so only the end-anchored one is trusted.
+_TAKE_RE = re.compile(r"_T(\d+)(?:_FULL)?\.tgz$", re.IGNORECASE)
 
-_SECTION_RE = re.compile(r"^\[(\w+)\]\s*$")
-_JHF_TAKE_RE = re.compile(r"JHF_MAIN\s+Take:\s*(\d+)", re.IGNORECASE)
-_NO_HOTFIXES_RE = re.compile(r"no hotfixes\.\.", re.IGNORECASE)
-
-# Prefer the firewall module's own section (relevant to gateway CVEs); fall back to
-# MGMT for a pure management server, which has no FW1 blade of its own.
-_PREFERRED_SECTIONS = ("FW1", "MGMT")
+# The base-OS installer/upgrade package ("major" category) also carries a
+# trailing build tag that looks like a Take number but isn't one -- exclude it.
+_EXCLUDED_CATEGORIES = {"major"}
 
 
 def get_installed_jhf_take(client: CPClient, target: str, gateway_name: str, poll_timeout: float = 30.0) -> int | None:
-    """Returns the installed JHF Take number (0 if that section explicitly shows "no
-    hotfixes"), or None if the script/task didn't complete or its output couldn't be
-    confidently parsed. Never raises -- callers should treat None as "couldn't
-    determine, fall back to manual review", not as an error."""
+    """Returns the installed JHF Take number (0 if no hotfix package is installed
+    at all), or None if the query failed or no Take-shaped package-id was found
+    among installed, non-excluded packages. Never raises -- callers should treat
+    None as "couldn't determine, fall back to manual review", not as an error.
+    poll_timeout is accepted for call-site compatibility but unused -- this is a
+    single synchronous query, not an async task to poll."""
     try:
-        resp = client.call("run-script", target, {
-            "script-name": "advisory-watch-jhf-check",
-            "script": _SCRIPT,
+        resp = client.call("show-software-packages-per-targets", target, {
             "targets": [gateway_name],
+            "display": {"installed": "yes"},
         })
-        task_id = resp["tasks"][0]["task-id"]
+        packages = resp["targets"][0]["packages"]["installed"]
     except Exception:
         return None
 
-    deadline = time.time() + poll_timeout
-    while time.time() < deadline:
-        try:
-            task_resp = client.call("show-task", target, {"task-id": task_id, "details-level": "full"})
-            task = task_resp["tasks"][0]
-        except Exception:
-            return None
-        status = task.get("status")
-        if status == "succeeded":
-            details = task.get("task-details", [])
-            if not details:
-                return None
-            b64 = details[0].get("responseMessage", "")
-            try:
-                output = base64.b64decode(b64).decode("utf-8", errors="replace")
-            except Exception:
-                return None
-            return _parse_jhf_take(output)
-        if status in ("failed", "partially succeeded"):
-            return None
-        time.sleep(2)
-    return None  # timed out
+    if not packages:
+        return 0
 
-
-def _parse_jhf_take(output: str) -> int | None:
-    """Section-aware: only trusts a "no hotfixes" verdict when it's scoped to the
-    FW1/MGMT section specifically, since cpinfo's output legitimately says "No
-    hotfixes.." for many unrelated subsystems even on a fully patched gateway --
-    treating any such line anywhere in the output as "unpatched" would be wrong."""
-    sections: dict[str, list[str]] = {}
-    current = None
-    for line in output.splitlines():
-        m = _SECTION_RE.match(line.strip())
+    takes = []
+    for pkg in packages:
+        if pkg.get("category") in _EXCLUDED_CATEGORIES:
+            continue
+        m = _TAKE_RE.search(pkg.get("package-id", ""))
         if m:
-            current = m.group(1).upper()
-            sections.setdefault(current, [])
-            continue
-        if current:
-            sections[current].append(line)
-
-    for section_name in _PREFERRED_SECTIONS:
-        lines = sections.get(section_name)
-        if not lines:
-            continue
-        block = "\n".join(lines)
-        take_match = _JHF_TAKE_RE.search(block)
-        if take_match:
-            return int(take_match.group(1))
-        if _NO_HOTFIXES_RE.search(block):
-            return 0
-    return None
+            takes.append(int(m.group(1)))
+    return max(takes) if takes else None
