@@ -32,6 +32,7 @@ def render_body(result: MatchResult) -> str:
         for gw in result.matched_gateways:
             blades = ", ".join(gw.blades) if gw.blades else "none listed"
             gap = result.gateway_take_gap.get(gw.uid)
+            threshold = result.gateway_known_threshold.get(gw.uid)
             if gw.uid in result.eos_gateway_uids:
                 lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}: "
                               f"end-of-support version, no Jumbo Hotfix fixes this — upgrade required")
@@ -39,6 +40,10 @@ def render_body(result: MatchResult) -> str:
                 installed, required = gap
                 lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}: "
                               f"Take {installed} installed, Take {required} required — patch needed")
+            elif threshold is not None:
+                lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}: "
+                              f"vulnerable at Take {threshold} or below — verify installed Take "
+                              f"(enable ENABLE_HOTFIX_CHECK to confirm automatically)")
             else:
                 lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}, blades: {blades}")
     elif result.needs_review:
@@ -55,6 +60,10 @@ def render_body(result: MatchResult) -> str:
     elif result.gateway_take_gap:
         lines.append("- Install the required Jumbo Hotfix Accumulator Take (see Check Point's "
                       "fix advisory below) on the affected gateways.")
+    elif result.gateway_known_threshold:
+        lines.append("- The exact Take threshold is known for these gateways, but the installed "
+                      "Take couldn't be confirmed automatically — check manually, or enable "
+                      "ENABLE_HOTFIX_CHECK in .env so this is verified for you next time.")
     elif result.matched_gateways:
         lines.append("- Check the vendor advisory below for the fixed version / hotfix, "
                       "and schedule an upgrade or hotfix install on the affected gateways.")
@@ -78,7 +87,7 @@ def render_body(result: MatchResult) -> str:
 def subject_for(result: MatchResult) -> str:
     adv = result.advisory
     prefix = "[KEV] " if adv.kev else ""
-    tag = " — needs manual review" if result.needs_review and not result.matched_gateways else ""
+    tag = " — needs manual review" if result.needs_review else ""
     return f"{prefix}Remediation: {adv.cve_id or adv.title[:60]}{tag}"
 
 

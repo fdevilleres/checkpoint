@@ -51,6 +51,12 @@ class MatchResult:
     # subset of matched_gateways with no Take fix at all (EOS version) -- needs an
     # upgrade, not a hotfix install; drafter.py renders these with a different message.
     eos_gateway_uids: set[str] = field(default_factory=set)
+    # gateway uid -> max_vulnerable_take, for gateways with a known Take threshold that
+    # couldn't be confirmed against the actually-installed Take (ENABLE_HOTFIX_CHECK
+    # off, or the diagnostic didn't return a usable answer). Still attributable to
+    # this specific gateway -- distinct from a generic "needs review" with no
+    # gateway attached at all.
+    gateway_known_threshold: dict[str, int] = field(default_factory=dict)
 
 
 def _version_tuple(version: str) -> tuple[int, ...] | None:
@@ -120,24 +126,30 @@ def _match_via_cp_advisory(adv: Advisory, gateways: list[Gateway], client, targe
     for r in relevant:
         rows_by_version.setdefault(r.version, []).append(r)
 
-    vulnerable: list[Gateway] = []
+    matched: list[Gateway] = []
     eos_uids: set[str] = set()
     take_gap: dict[str, tuple[int, int]] = {}
-    any_ambiguous = False
+    known_threshold: dict[str, int] = {}
     any_never = False
+    any_relevant_version = False
 
     for gw in gateways:
         gw_version = (gw.version or "").upper().strip()
         rows = rows_by_version.get(gw_version) if gw_version else None
         if not rows:
             continue
+        any_relevant_version = True
 
-        gw_vulnerable = gw_ambiguous = gw_never = False
+        confirmed_vulnerable = False
+        unconfirmed_take: int | None = None
+        has_unconfirmed_generic = False
+        gw_never = False
+
         for row in rows:
             if row.status == cpadvisories.RowStatus.NEVER_VULNERABLE:
                 gw_never = True
             elif row.status == cpadvisories.RowStatus.ALWAYS_VULNERABLE:
-                gw_vulnerable = True
+                confirmed_vulnerable = True
                 eos_uids.add(gw.uid)
             elif row.status == cpadvisories.RowStatus.TAKE_BOUNDED:
                 if enable_hotfix_check and client is not None and target:
@@ -145,24 +157,34 @@ def _match_via_cp_advisory(adv: Advisory, gateways: list[Gateway], client, targe
                         take_cache[gw.uid] = hotfix.get_installed_jhf_take(client, target, gw.name)
                     installed = take_cache[gw.uid]
                     if installed is None:
-                        gw_ambiguous = True
+                        unconfirmed_take = row.max_vulnerable_take
                     elif installed <= row.max_vulnerable_take:
-                        gw_vulnerable = True
+                        confirmed_vulnerable = True
                         take_gap[gw.uid] = (installed, row.max_vulnerable_take + 1)
                     # else: installed > max_vulnerable_take -> already patched
                 else:
-                    gw_ambiguous = True
-            else:  # NEEDS_MANUAL_CHECK
-                gw_ambiguous = True
+                    # Hotfix check disabled -- we still know the exact Take threshold
+                    # for THIS gateway's exact version, just can't confirm what's
+                    # installed. That's a real, attributable finding for this specific
+                    # gateway, not a generic "could apply somewhere" ambiguity.
+                    unconfirmed_take = row.max_vulnerable_take
+            else:  # NEEDS_MANUAL_CHECK -- relevant to this gateway, but no numeric data
+                has_unconfirmed_generic = True
 
-        if gw_vulnerable:
-            vulnerable.append(gw)
-        elif gw_ambiguous:
-            any_ambiguous = True
+        if confirmed_vulnerable:
+            matched.append(gw)
+        elif unconfirmed_take is not None:
+            matched.append(gw)
+            known_threshold[gw.uid] = unconfirmed_take
+        elif has_unconfirmed_generic:
+            matched.append(gw)
         elif gw_never:
             any_never = True
 
-    if not vulnerable and not any_ambiguous and not any_never:
+    if not any_relevant_version:
+        return None
+
+    if not matched and not any_never:
         # This advisory does cover gateway/management-relevant products (checked via
         # `relevant` above) -- it just has no row for any current gateway's exact
         # version yet. That's still real, useful context (a genuine Check Point
@@ -171,14 +193,16 @@ def _match_via_cp_advisory(adv: Advisory, gateways: list[Gateway], client, targe
         # that has no idea this CVE is even Check Point-relevant.
         return MatchResult(advisory=adv, matched_gateways=[], needs_review=True, sk_url=adv.source_url)
 
+    unconfirmed_uids = {gw.uid for gw in matched} - set(take_gap) - eos_uids
     return MatchResult(
         advisory=adv,
-        matched_gateways=vulnerable,
-        needs_review=any_ambiguous and not vulnerable,
-        resolved_not_applicable=(not vulnerable and not any_ambiguous and any_never),
+        matched_gateways=matched,
+        needs_review=bool(unconfirmed_uids),
+        resolved_not_applicable=(not matched and any_never),
         sk_url=adv.source_url,
         gateway_take_gap=take_gap,
         eos_gateway_uids=eos_uids,
+        gateway_known_threshold=known_threshold,
     )
 
 

@@ -14,7 +14,7 @@ function severityBadgeClass(severity) {
   }
 }
 
-function addRow(table, adv) {
+function addRow(table, adv, gwUid) {
   var row = table.insertRow(-1);
 
   var cellCve = row.insertCell(0);
@@ -39,11 +39,29 @@ function addRow(table, adv) {
   }
 
   var cellStatus = row.insertCell(2);
+  var gap = gwUid && adv.gateway_take_gap ? adv.gateway_take_gap[gwUid] : null;
+  var threshold = gwUid && adv.gateway_known_threshold ? adv.gateway_known_threshold[gwUid] : null;
+  var isEos = gwUid && adv.eos_gateway_uids && adv.eos_gateway_uids.indexOf(gwUid) !== -1;
   if (adv.resolved_not_applicable) {
     var resolvedBadge = document.createElement("span");
     resolvedBadge.className = "badge badge-resolved";
     resolvedBadge.innerText = "Not applicable";
     cellStatus.appendChild(resolvedBadge);
+  } else if (isEos) {
+    var eosBadge = document.createElement("span");
+    eosBadge.className = "badge badge-review";
+    eosBadge.innerText = "EOS — upgrade needed";
+    cellStatus.appendChild(eosBadge);
+  } else if (gap) {
+    var gapBadge = document.createElement("span");
+    gapBadge.className = "badge badge-critical";
+    gapBadge.innerText = "Take " + gap[0] + " → " + gap[1] + " needed";
+    cellStatus.appendChild(gapBadge);
+  } else if (threshold !== null && threshold !== undefined) {
+    var thresholdBadge = document.createElement("span");
+    thresholdBadge.className = "badge badge-review";
+    thresholdBadge.innerText = "Verify Take > " + threshold;
+    cellStatus.appendChild(thresholdBadge);
   } else if (adv.needs_review) {
     var reviewBadge = document.createElement("span");
     reviewBadge.className = "badge badge-review";
@@ -65,7 +83,7 @@ function addRow(table, adv) {
   cellSource.appendChild(sourceLink);
 }
 
-function renderAdvisories(data) {
+function renderAdvisories(data, gwUid) {
   removeLoader();
 
   var matched = data.matched || [];
@@ -74,7 +92,7 @@ function renderAdvisories(data) {
 
   if (matched.length > 0) {
     var matchedTable = document.getElementById("matchedTable");
-    matched.forEach(function (adv) { addRow(matchedTable, adv); });
+    matched.forEach(function (adv) { addRow(matchedTable, adv, gwUid); });
     document.getElementById("matched-section").style.display = "block";
   } else {
     document.getElementById("matched-empty-message").style.display = "block";
@@ -96,7 +114,7 @@ function renderAdvisories(data) {
 function fetchAdvisories(uid) {
   fetch("/api/gateway/" + encodeURIComponent(uid) + "/advisories")
     .then(function (resp) { return resp.json(); })
-    .then(renderAdvisories)
+    .then(function (data) { renderAdvisories(data, uid); })
     .catch(function (err) {
       removeLoader();
       var message = document.createElement("p");

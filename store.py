@@ -69,6 +69,10 @@ def record_result(state: dict, result) -> None:
         # Gateways in matched_gateways with NO Take that fixes them (EOS version) --
         # needs an upgrade, not a hotfix install.
         "eos_gateway_uids": sorted(result.eos_gateway_uids),
+        # {gateway uid: max_vulnerable_take} -- known Take threshold for this specific
+        # gateway that couldn't be confirmed against its installed Take (hotfix check
+        # off, or undeterminable). Still attributed to the gateway, just unconfirmed.
+        "gateway_known_threshold": dict(result.gateway_known_threshold),
         "cp_severity": adv.cp_severity,
         "sk_id": adv.sk_id,
     }

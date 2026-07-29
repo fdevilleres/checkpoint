@@ -156,7 +156,7 @@ def cmd_check(dry_run: bool) -> None:
 
     print("Fetching Check Point's own structured Security Advisories feed…")
     kev_cve_ids = {a.cve_id for a in kev_advisories}
-    cp_fixes = cpadvisories.fetch_all()
+    cp_fixes_all = cpadvisories.fetch_all()
     cp_since = store.get_last_checked(state, "cp_advisories")
     if not cp_since:
         # Same reasoning as the NVD first-run window: this feed has no server-side
@@ -166,20 +166,59 @@ def cmd_check(dry_run: bool) -> None:
         # subsequent runs rely on seen_cve_ids for incremental behavior, not this.
         cp_since = (datetime.now(timezone.utc) - timedelta(days=FIRST_RUN_LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%S.000")
         print(f"First run for Check Point's advisory feed — filtering to the last {FIRST_RUN_LOOKBACK_DAYS} days.")
-    cp_fixes = [f for f in cp_fixes if (f.updated or f.published or "0") >= cp_since]
-    print(f"  {len(cp_fixes)} matching entr(y/ies)")
-    for fix in cp_fixes:
+    cp_fixes_recent = [f for f in cp_fixes_all if (f.updated or f.published or "0") >= cp_since]
+    print(f"  {len(cp_fixes_recent)} matching entr(y/ies)")
+    for fix in cp_fixes_recent:
         cp_adv = _cp_advisory_to_advisory(fix)
         cp_adv.kev = fix.cve_id in kev_cve_ids
         all_advisories[fix.cve_id] = cp_adv  # Check Point's own structured data takes precedence
 
     new_advisories = [a for a in all_advisories.values() if not store.is_seen(state, a.cve_id)]
+
+    # Refresh set: built from the FULL (unfiltered) Check Point feed, not just this
+    # run's recent window. Gateway inventory can change independently of when Check
+    # Point last updated an advisory (e.g. a gateway's reported version was wrong at
+    # first-check time and corrected later) -- every already-seen CVE Check Point
+    # still actively lists should be re-matched against the current gateways every
+    # run, not only the ones that happen to fall in the flood-protection window.
+    already_seen_advisories = []
+    for fix in cp_fixes_all:
+        if store.is_seen(state, fix.cve_id):
+            cp_adv = _cp_advisory_to_advisory(fix)
+            cp_adv.kev = fix.cve_id in kev_cve_ids
+            already_seen_advisories.append(cp_adv)
+    already_seen_cp_ids = {a.cve_id for a in already_seen_advisories}
+    # Also cover already-seen NVD/KEV-only advisories (no Check Point feed entry) that
+    # happen to still be in this run's NVD/KEV fetch -- same limited window as before.
+    for a in all_advisories.values():
+        if store.is_seen(state, a.cve_id) and a.cve_id not in already_seen_cp_ids:
+            already_seen_advisories.append(a)
+
     print(f"{len(new_advisories)} new advisory(ies) to evaluate (of {len(all_advisories)} total fetched).")
 
     results = matcher.match(new_advisories, gateways, keywords,
                              client=client, target=TARGET_NAME, enable_hotfix_check=_hotfix_check_enabled(),
                              cp_relevant_products=_cp_advisory_products())
     _process_results(results, state, dry_run)
+
+    # A CVE marked "seen" was matched against the gateway inventory *at the time it
+    # was first processed*. If a gateway gets added/changed afterwards, that stale
+    # match never gets revisited on its own -- the dashboard would keep showing "no
+    # match" for a CVE that genuinely does apply to the new gateway. Re-run matching
+    # for already-seen advisories still present in this run's fetch and refresh their
+    # stored result, without re-drafting or re-emailing (they're already seen).
+    if already_seen_advisories:
+        refreshed = matcher.match(already_seen_advisories, gateways, keywords,
+                                   client=client, target=TARGET_NAME, enable_hotfix_check=_hotfix_check_enabled(),
+                                   cp_relevant_products=_cp_advisory_products())
+        newly_relevant = [r for r in refreshed if r.matched_gateways]
+        tail = " (no new email sent, these are already seen)" if newly_relevant else ""
+        print(f"Re-checked {len(refreshed)} already-seen advisory(ies) against the current gateway "
+              f"inventory — {len(newly_relevant)} now match a gateway{tail}.")
+        for r in newly_relevant:
+            print(f"  {r.advisory.cve_id} now matches: {', '.join(g.name for g in r.matched_gateways)}")
+        for r in refreshed:
+            store.record_result(state, r)
 
     if dry_run:
         print("\n[DRY RUN] No state was changed — re-run without --dry-run to actually draft these.")
