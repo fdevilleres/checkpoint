@@ -37,26 +37,32 @@ import time
 import urllib.request
 from dataclasses import dataclass, field
 
-# The section heading is the anchor, NOT a bare string search: the same heading text
-# also appears in the article's table of contents and in revision-history entries
-# (4 occurrences of the plain string on sk185033, but exactly one real <h3>).
+# Primary anchor: the sentence that introduces the fix list, in either of the two
+# phrasings seen live --
+#   sk185033: "The fix is included in these Jumbo Hotfix Accumulators:"  (a table)
+#   sk185169: "This problem was fixed. The fix is included in:"          (a <ul>)
+_FIX_SENTENCE_RE = re.compile(r"The fix is included in", re.IGNORECASE)
+# Fallback anchor: the section heading. Matched as an <h3> element rather than as
+# plain text because the same heading string also appears in the article's table of
+# contents and in revision-history entries (4 plain-string hits on sk185033, but
+# exactly one real <h3>).
 _H3_BLOCK_RE = re.compile(r"<h3\b[^>]*>(.*?)</h3>", re.IGNORECASE | re.DOTALL)
-# Fallback anchor: the sentence that introduces the fix table.
-_FIX_SENTENCE = "The fix is included in these Jumbo Hotfix Accumulator"
 
 _TABLE_RE = re.compile(r"<table\b.*?</table>", re.IGNORECASE | re.DOTALL)
+_LIST_RE = re.compile(r"<ul\b.*?</ul>", re.IGNORECASE | re.DOTALL)
 _ROW_RE = re.compile(r"<tr\b.*?</tr>", re.IGNORECASE | re.DOTALL)
-_CELL_RE = re.compile(r"<t[dh]\b.*?</t[dh]>", re.IGNORECASE | re.DOTALL)
+_ITEM_RE = re.compile(r"<li\b.*?</li>", re.IGNORECASE | re.DOTALL)
 _TAG_RE = re.compile(r"<[^>]+>")
 _H3_RE = re.compile(r"<h3\b", re.IGNORECASE)
 
-_VERSION_IN_CELL_RE = re.compile(r"(R\d+(?:\.\d+)?)\s*Jumbo Hotfix Accumulator", re.IGNORECASE)
-_TAKE_IN_CELL_RE = re.compile(r"Take\s*(\d+)", re.IGNORECASE)
-# Prose form, only ever applied inside the already-scoped Solution section.
-_PROSE_FIX_RE = re.compile(
-    r"(R\d+(?:\.\d+)?)\s*Jumbo Hotfix Accumulator\s*(?:Take|.{0,20}?Take)\s*(\d+)",
-    re.IGNORECASE,
+# Both word orders seen live, on articles published weeks apart:
+#   "R82.10 Jumbo Hotfix Accumulator" ... "Take 24"        (sk185033, table)
+#   "Jumbo Hotfix Accumulator for R82.10 starting from Take 36" (sk185169, list)
+_VERSION_RES = (
+    re.compile(r"(R\d+(?:\.\d+)?)\s*Jumbo Hotfix Accumulator", re.IGNORECASE),
+    re.compile(r"Jumbo Hotfix Accumulator\s+for\s+(R\d+(?:\.\d+)?)", re.IGNORECASE),
 )
+_TAKE_RE = re.compile(r"Take\s*(\d+)", re.IGNORECASE)
 
 # The full list of versions the advisory considers in scope, from the article's
 # embedded metadata blob. A gateway version absent from this list is out of scope
@@ -119,27 +125,37 @@ def _cache_put(info: SkFixInfo) -> None:
 
 
 def _extract_fix_section(html: str) -> str | None:
-    """The slice of HTML from the Solution section's JHF-fix <h3> up to the next
-    <h3>. Everything outside this window (the vulnerable-configs list, the "Hotfix"
-    download table, revision history) mentions Take numbers that are not the fix,
-    so scoping here is what makes the parse correct rather than coincidental."""
-    start = None
-    for heading in _H3_BLOCK_RE.finditer(html):
-        text = _strip(heading.group(1)).lower()
-        if "jumbo hotfix accumulator" in text and ("install" in text or "recommended" in text):
-            start = heading.end()
-            break
+    """The slice of HTML holding ONLY the "these are the Jumbo Takes that contain the
+    fix" list, anchored on the sentence that introduces it and bounded by the next
+    <h3>. The bound matters: on sk185033 the very next heading starts the "Hotfix"
+    download table, whose rows name older base Takes that are emphatically not the
+    fix. Everything else that quotes a Take (the vulnerable-configurations list,
+    revision history) also falls outside this window."""
+    match = _FIX_SENTENCE_RE.search(html)
+    start = match.end() if match else None
 
     if start is None:
-        # No matching heading -- fall back to the sentence that introduces the
-        # table. Still anchored inside the Solution body, never the TOC.
-        idx = html.find(_FIX_SENTENCE)
-        if idx == -1:
-            return None
-        start = idx
+        for heading in _H3_BLOCK_RE.finditer(html):
+            text = _strip(heading.group(1)).lower()
+            if "jumbo hotfix accumulator" in text and ("install" in text or "recommended" in text):
+                start = heading.end()
+                break
+    if start is None:
+        return None
 
     next_h3 = _H3_RE.search(html, start)
     return html[start:next_h3.start()] if next_h3 else html[start:]
+
+
+def _version_take(text: str) -> tuple[str, int] | None:
+    take_match = _TAKE_RE.search(text)
+    if not take_match:
+        return None
+    for version_re in _VERSION_RES:
+        version_match = version_re.search(text)
+        if version_match:
+            return version_match.group(1).upper(), int(take_match.group(1))
+    return None
 
 
 def _parse_fix_takes(html: str) -> dict[str, int]:
@@ -147,25 +163,22 @@ def _parse_fix_takes(html: str) -> dict[str, int]:
     if section is None:
         return {}
 
-    fix_takes: dict[str, int] = {}
+    # Whichever of the two containers appears first after the anchor is the fix
+    # list: a <table> (sk185033) or a <ul> (sk185169).
     table_match = _TABLE_RE.search(section)
-    if table_match:
-        for row_html in _ROW_RE.findall(table_match.group(0)):
-            cells = [_strip(c) for c in _CELL_RE.findall(row_html)]
-            if len(cells) < 2:
-                continue
-            version_match = _VERSION_IN_CELL_RE.search(cells[0])
-            take_match = _TAKE_IN_CELL_RE.search(cells[1])
-            if version_match and take_match:
-                fix_takes[version_match.group(1).upper()] = int(take_match.group(1))
+    list_match = _LIST_RE.search(section)
+    candidates = [m for m in (table_match, list_match) if m]
+    if not candidates:
+        return {}
+    block = min(candidates, key=lambda m: m.start()).group(0)
 
-    if not fix_takes:
-        # No table in this section -- some articles state the recommended Take as
-        # prose instead. Still scoped to the Solution section, so this can't pick
-        # up a download-table or revision-history number.
-        for version, take in _PROSE_FIX_RE.findall(_strip(section)):
-            fix_takes[version.upper()] = int(take)
-
+    items = _ROW_RE.findall(block) or _ITEM_RE.findall(block)
+    fix_takes: dict[str, int] = {}
+    for item in items:
+        parsed = _version_take(_strip(item))
+        if parsed:
+            version, take = parsed
+            fix_takes[version] = take
     return fix_takes
 
 
