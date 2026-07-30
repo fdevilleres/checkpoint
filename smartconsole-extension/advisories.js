@@ -60,18 +60,18 @@ function addRow(table, adv, gwUid) {
   } else if (gap) {
     var gapBadge = document.createElement("span");
     gapBadge.className = "badge badge-critical";
-    gapBadge.innerText = "Take " + gap[0] + " → " + gap[1] + " needed" + (conflict ? " *" : "");
-    if (conflict) {
-      gapBadge.title = conflictTitle;
-    }
+    gapBadge.innerText = "Install JHF Take " + gap[1] + (conflict ? " *" : "");
+    gapBadge.title = "Jumbo Hotfix Accumulator Take " + gap[1] + " or above must be installed. "
+      + "Currently installed: Take " + gap[0] + "." + (conflict ? " " + conflictTitle : "");
     cellStatus.appendChild(gapBadge);
   } else if (threshold !== null && threshold !== undefined) {
+    var requiredTake = threshold + 1;
     var thresholdBadge = document.createElement("span");
     thresholdBadge.className = "badge badge-review";
-    thresholdBadge.innerText = "Verify Take > " + threshold + (conflict ? " *" : "");
-    if (conflict) {
-      thresholdBadge.title = conflictTitle;
-    }
+    thresholdBadge.innerText = "Install JHF Take " + requiredTake + "+ (unconfirmed)" + (conflict ? " *" : "");
+    thresholdBadge.title = "Jumbo Hotfix Accumulator Take " + requiredTake + " or above is expected to fix "
+      + "this, but the installed Take on this gateway couldn't be confirmed automatically."
+      + (conflict ? " " + conflictTitle : "");
     cellStatus.appendChild(thresholdBadge);
   } else if (adv.needs_review) {
     var reviewBadge = document.createElement("span");

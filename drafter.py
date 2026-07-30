@@ -46,12 +46,13 @@ def render_body(result: MatchResult) -> str:
             elif gap:
                 installed, required = gap
                 lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}: "
-                              f"Take {installed} installed, Take {required} required — patch needed"
-                              f"{conflict_note}")
+                              f"install Jumbo Hotfix Accumulator Take {required} or above "
+                              f"(currently installed: Take {installed}){conflict_note}")
             elif threshold is not None:
                 lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}: "
-                              f"vulnerable at Take {threshold} or below — verify installed Take "
-                              f"(enable ENABLE_HOTFIX_CHECK to confirm automatically){conflict_note}")
+                              f"install Jumbo Hotfix Accumulator Take {threshold + 1} or above — "
+                              f"installed Take couldn't be confirmed automatically "
+                              f"(enable ENABLE_HOTFIX_CHECK to confirm){conflict_note}")
             else:
                 lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}, blades: {blades}")
     elif result.needs_review:
