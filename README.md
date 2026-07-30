@@ -1,8 +1,15 @@
 # advisory-watch
 
 Watches for vendor security advisories affecting your Check Point gateways, matches them
-against your actual gateway inventory (via the Management API), and saves a ready-to-review
-remediation write-up as a **Gmail draft** — nothing is ever sent automatically.
+against your actual gateway inventory, and saves a ready-to-review remediation write-up as a
+**Gmail draft** — nothing is ever sent automatically. Also ships a SmartConsole dashboard
+extension so anyone with the gateway open can see the same matches without an email.
+
+Gateway inventory can come from three places, all mergeable in the same deployment: your primary
+Check Point Management Server (`.env`), any number of additional servers you hold credentials for
+(`targets.json`, for other teams/orgs), and gateways that self-report their own version/Take with
+no credentials at all (`gateway-report.sh`, for orgs you have no Management API access to). See
+"Multiple management servers" and "Self-reported gateways" below.
 
 ## What's automated vs. manual
 
@@ -84,6 +91,10 @@ If any configured server is unreachable during a run, its gateways are skipped f
 the re-check of already-seen advisories is deferred (so an outage at one org can't silently
 erase another org's stored matches).
 
+This still means the advisory-watch operator holds credentials to every server in `targets.json`
+— a real ask for an external org. If that's not workable, see "Self-reported gateways" below for
+a credential-free alternative.
+
 ## Usage
 
 ```bash
@@ -144,10 +155,13 @@ Notes:
   to load — it's separate from the weekly `check` Task Scheduler job. Run manually with
   `python server.py`, or wire `run_server.bat` into Task Scheduler with an "At startup" trigger
   (no end time) so it survives reboots — see "Deploying this for a team" below.
-- It's read-only end to end: the extension only reads `state.json` through the local API. It
-  never talks to Gmail or the Management API itself, and requests no special SmartConsole
-  permissions (verified against the official docs and the `show-gateways-interfaces` reference
-  example in [CheckPointSW/smart-console-extensions](https://github.com/CheckPointSW/smart-console-extensions)).
+- The extension itself only ever does `GET`s — it reads `state.json` (or a live self-reported
+  match, see below) through the local API, never talks to Gmail or the Management API, and
+  requests no special SmartConsole permissions (verified against the official docs and the
+  `show-gateways-interfaces` reference example in
+  [CheckPointSW/smart-console-extensions](https://github.com/CheckPointSW/smart-console-extensions)).
+  The one write path on the server is `/api/report`, used by `gateway-report.sh`, not the
+  extension — see "Self-reported gateways" below.
 - Uses a self-signed HTTPS cert (`ssl_context='adhoc'`) by default — explicitly allowed per the
   docs. Set `SSL_CERT_FILE`/`SSL_KEY_FILE` in `.env` to use a real cert instead (see below).
 
