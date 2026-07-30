@@ -73,6 +73,11 @@ def record_result(state: dict, result) -> None:
         # gateway that couldn't be confirmed against its installed Take (hotfix check
         # off, or undeterminable). Still attributed to the gateway, just unconfirmed.
         "gateway_known_threshold": dict(result.gateway_known_threshold),
+        # {gateway uid: [cp_advisory_feed_required_take, sk_article_required_take]} --
+        # only populated when Check Point's own structured feed disagreed with its own
+        # sk-article's Take table; the (higher, more conservative) sk-article number
+        # is what's actually used above, this is just so that's visible, not silent.
+        "take_source_conflict": {uid: list(pair) for uid, pair in result.take_source_conflict.items()},
         "cp_severity": adv.cp_severity,
         "sk_id": adv.sk_id,
     }

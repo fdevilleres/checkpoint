@@ -57,6 +57,13 @@ class MatchResult:
     # this specific gateway -- distinct from a generic "needs review" with no
     # gateway attached at all.
     gateway_known_threshold: dict[str, int] = field(default_factory=dict)
+    # gateway uid -> (cp_advisory_feed_required_take, sk_article_required_take), only
+    # populated when Check Point's own two sources disagree on the fix Take for this
+    # version and the sk-article's (higher, more conservative) number was used instead.
+    # Confirmed live: the structured feed said "Take 19 or below" (Take 20 fixes it)
+    # for a CVE whose own sk-article's Take table says Take 24 -- the feed can lag the
+    # article it's generated from.
+    take_source_conflict: dict[str, tuple[int, int]] = field(default_factory=dict)
 
 
 def _version_tuple(version: str) -> tuple[int, ...] | None:
@@ -129,10 +136,23 @@ def _match_via_cp_advisory(adv: Advisory, gateways: list[Gateway], client, targe
     for r in relevant:
         rows_by_version.setdefault(r.version, []).append(r)
 
+    # The structured feed can lag the sk-article it's generated from (confirmed
+    # live -- see take_source_conflict's docstring). One best-effort scrape per
+    # advisory (not per gateway) cross-checks every Take-bounded row against the
+    # article's own Take table; skfix.py already degrades gracefully (returns
+    # None) on a WAF challenge or a missing article, so this is safe to always
+    # attempt rather than only on request.
+    sk_required_takes: dict[str, int] = {}
+    if any(r.status == cpadvisories.RowStatus.TAKE_BOUNDED for r in relevant) and adv.source_url:
+        sk_info = skfix.fetch_sk_fix_info(adv.source_url)
+        if sk_info:
+            sk_required_takes = sk_info.required_takes
+
     matched: list[Gateway] = []
     eos_uids: set[str] = set()
     take_gap: dict[str, tuple[int, int]] = {}
     known_threshold: dict[str, int] = {}
+    take_conflict: dict[str, tuple[int, int]] = {}
     any_never = False
 
     for gw in gateways:
@@ -157,22 +177,32 @@ def _match_via_cp_advisory(adv: Advisory, gateways: list[Gateway], client, targe
                 confirmed_vulnerable = True
                 eos_uids.add(gw.uid)
             elif row.status == cpadvisories.RowStatus.TAKE_BOUNDED:
+                max_vulnerable = row.max_vulnerable_take
+                sk_required = sk_required_takes.get(gw_version)
+                if sk_required is not None and sk_required - 1 > max_vulnerable:
+                    # sk-article's own Take table requires a higher Take than the
+                    # structured feed's row -- trust the more conservative number,
+                    # but keep both so it's visible this was a reconciled value,
+                    # not silently substituted.
+                    take_conflict[gw.uid] = (max_vulnerable + 1, sk_required)
+                    max_vulnerable = sk_required - 1
+
                 if enable_hotfix_check and client is not None and (gw.target or target):
                     if gw.uid not in take_cache:
                         take_cache[gw.uid] = hotfix.get_installed_jhf_take(client, gw.target or target, gw.name)
                     installed = take_cache[gw.uid]
                     if installed is None:
-                        unconfirmed_take = row.max_vulnerable_take
-                    elif installed <= row.max_vulnerable_take:
+                        unconfirmed_take = max_vulnerable
+                    elif installed <= max_vulnerable:
                         confirmed_vulnerable = True
-                        take_gap[gw.uid] = (installed, row.max_vulnerable_take + 1)
-                    # else: installed > max_vulnerable_take -> already patched
+                        take_gap[gw.uid] = (installed, max_vulnerable + 1)
+                    # else: installed > max_vulnerable -> already patched
                 else:
                     # Hotfix check disabled -- we still know the exact Take threshold
                     # for THIS gateway's exact version, just can't confirm what's
                     # installed. That's a real, attributable finding for this specific
                     # gateway, not a generic "could apply somewhere" ambiguity.
-                    unconfirmed_take = row.max_vulnerable_take
+                    unconfirmed_take = max_vulnerable
             else:  # NEEDS_MANUAL_CHECK -- relevant to this gateway, but no numeric data
                 has_unconfirmed_generic = True
 
@@ -206,6 +236,7 @@ def _match_via_cp_advisory(adv: Advisory, gateways: list[Gateway], client, targe
         gateway_take_gap=take_gap,
         eos_gateway_uids=eos_uids,
         gateway_known_threshold=known_threshold,
+        take_source_conflict=take_conflict,
     )
 
 

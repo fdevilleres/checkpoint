@@ -33,17 +33,25 @@ def render_body(result: MatchResult) -> str:
             blades = ", ".join(gw.blades) if gw.blades else "none listed"
             gap = result.gateway_take_gap.get(gw.uid)
             threshold = result.gateway_known_threshold.get(gw.uid)
+            conflict = result.take_source_conflict.get(gw.uid)
+            conflict_note = ""
+            if conflict:
+                feed_required, sk_required = conflict
+                conflict_note = (f" (Check Point's structured advisory feed said Take {feed_required} "
+                                  f"required, but its own sk-article says Take {sk_required} — using "
+                                  f"the higher, sk-article number)")
             if gw.uid in result.eos_gateway_uids:
                 lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}: "
                               f"end-of-support version, no Jumbo Hotfix fixes this — upgrade required")
             elif gap:
                 installed, required = gap
                 lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}: "
-                              f"Take {installed} installed, Take {required} required — patch needed")
+                              f"Take {installed} installed, Take {required} required — patch needed"
+                              f"{conflict_note}")
             elif threshold is not None:
                 lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}: "
                               f"vulnerable at Take {threshold} or below — verify installed Take "
-                              f"(enable ENABLE_HOTFIX_CHECK to confirm automatically)")
+                              f"(enable ENABLE_HOTFIX_CHECK to confirm automatically){conflict_note}")
             else:
                 lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}, blades: {blades}")
     elif result.needs_review:

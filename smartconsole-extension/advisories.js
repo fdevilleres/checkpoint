@@ -42,6 +42,11 @@ function addRow(table, adv, gwUid) {
   var gap = gwUid && adv.gateway_take_gap ? adv.gateway_take_gap[gwUid] : null;
   var threshold = gwUid && adv.gateway_known_threshold ? adv.gateway_known_threshold[gwUid] : null;
   var isEos = gwUid && adv.eos_gateway_uids && adv.eos_gateway_uids.indexOf(gwUid) !== -1;
+  var conflict = gwUid && adv.take_source_conflict ? adv.take_source_conflict[gwUid] : null;
+  var conflictTitle = conflict
+    ? "Check Point's structured advisory feed said Take " + conflict[0] + " required, but its own "
+      + "sk-article says Take " + conflict[1] + " -- using the higher, sk-article number."
+    : "";
   if (adv.resolved_not_applicable) {
     var resolvedBadge = document.createElement("span");
     resolvedBadge.className = "badge badge-resolved";
@@ -55,12 +60,18 @@ function addRow(table, adv, gwUid) {
   } else if (gap) {
     var gapBadge = document.createElement("span");
     gapBadge.className = "badge badge-critical";
-    gapBadge.innerText = "Take " + gap[0] + " → " + gap[1] + " needed";
+    gapBadge.innerText = "Take " + gap[0] + " → " + gap[1] + " needed" + (conflict ? " *" : "");
+    if (conflict) {
+      gapBadge.title = conflictTitle;
+    }
     cellStatus.appendChild(gapBadge);
   } else if (threshold !== null && threshold !== undefined) {
     var thresholdBadge = document.createElement("span");
     thresholdBadge.className = "badge badge-review";
-    thresholdBadge.innerText = "Verify Take > " + threshold;
+    thresholdBadge.innerText = "Verify Take > " + threshold + (conflict ? " *" : "");
+    if (conflict) {
+      thresholdBadge.title = conflictTitle;
+    }
     cellStatus.appendChild(thresholdBadge);
   } else if (adv.needs_review) {
     var reviewBadge = document.createElement("span");
