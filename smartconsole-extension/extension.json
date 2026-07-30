@@ -17,12 +17,15 @@
         "caption": "Advisories",
         "tooltip": "Show CVE advisories matched to this gateway by advisory-watch",
         "action": {
-          "details-level": "standard",
+          "details-level": "full",
           "method": "get",
           "trigger-id": "gateways-details-pane",
           "url": "index.html"
         }
       }
     }
-  ]
+  ],
+  "requested-permissions": {
+    "client": ["get-read-only-session"]
+  }
 }

@@ -3,6 +3,16 @@
  * Reads the selected gateway from the SmartConsole extension context, then fetches
  * matched + unassigned advisories from advisory-watch's own local API (same origin
  * as this page).
+ *
+ * When the gateway is unknown to this server (not in its polled inventory, no
+ * self-report on file) and SmartConsole granted the "get-read-only-session"
+ * permission, this tries to auto-detect the gateway's version + installed Jumbo
+ * Hotfix Take itself -- using the CURRENT USER'S OWN read-only Management API
+ * session, obtained from the extension context, never advisory-watch's server.
+ * No credentials are shared with advisory-watch in either direction. If that
+ * isn't possible (permission not granted, call fails, management server
+ * unreachable from here), the tab falls back to telling the tester to run
+ * gateway-report.sh manually -- see MOP-AW-001 section 6.
  */
 
 function severityBadgeClass(severity) {
@@ -96,22 +106,19 @@ function addRow(table, adv, gwUid) {
   cellSource.appendChild(sourceLink);
 }
 
+function showUnknownBanner() {
+  var banner = document.createElement("div");
+  banner.className = "unknown-banner";
+  banner.innerHTML =
+    "<strong>This gateway hasn't been checked yet.</strong> It isn't in this server's " +
+    "polled inventory, automatic detection wasn't possible, and no self-report has been " +
+    "submitted for it. Run <code>gateway-report.sh</code> from the SmartConsole Scripts " +
+    "Repository against this gateway, then reopen this tab.";
+  document.body.insertBefore(banner, document.body.firstChild);
+}
+
 function renderAdvisories(data, gwUid) {
   removeLoader();
-
-  if (data.unknown) {
-    // Not a "no results": this gateway has never been polled by this server,
-    // and no self-report exists for it either -- an empty matched list here
-    // would be indistinguishable from "checked and clean", which is false.
-    var banner = document.createElement("div");
-    banner.className = "unknown-banner";
-    banner.innerHTML =
-      "<strong>This gateway hasn't been checked yet.</strong> It isn't in this server's " +
-      "polled inventory, and no self-report has been submitted for it. Run " +
-      "<code>gateway-report.sh</code> from the SmartConsole Scripts Repository against this " +
-      "gateway, then reopen this tab.";
-    document.body.insertBefore(banner, document.body.firstChild);
-  }
 
   var matched = data.matched || [];
   var unassigned = data.unassigned || [];
@@ -138,17 +145,115 @@ function renderAdvisories(data, gwUid) {
   }
 }
 
-function fetchAdvisories(uid, name) {
-  // name lets the server fall back to self-reported data (gateway-report.sh)
-  // when this uid is unknown to the polled inventory — e.g. a gateway on a
-  // management server the advisory-watch operator has no credentials for.
+/*
+ * The installed-Take rule mirrors hotfix.py exactly, so a testers's browser and
+ * advisory-watch's own collector never disagree on how to read the same API
+ * response: no installed packages at all -> Take 0 (a confirmed answer, not
+ * "unknown"); otherwise the highest Take found in a non-"major"-category
+ * package-id's trailing "_T<N>[_FULL].tgz", or null if nothing matched (a real
+ * "can't tell" case -- never guessed at).
+ */
+function parseInstalledTake(packages) {
+  if (!packages || packages.length === 0) {
+    return 0;
+  }
+  var takes = [];
+  packages.forEach(function (pkg) {
+    if (pkg.category === "major") {
+      return;
+    }
+    var m = /_T(\d+)(?:_FULL)?\.tgz$/i.exec(pkg["package-id"] || "");
+    if (m) {
+      takes.push(parseInt(m[1], 10));
+    }
+  });
+  return takes.length > 0 ? Math.max.apply(null, takes) : null;
+}
+
+/*
+ * Calls show-software-packages-per-targets directly against the Management API,
+ * using the read-only session SmartConsole granted THIS extension instance for
+ * THIS user -- never advisory-watch's own credentials, which it doesn't have for
+ * a foreign management server anyway. Requires "get-read-only-session" in
+ * extension.json's requested-permissions; api comes from the get-context
+ * response's "management-server-api" field.
+ */
+function fetchInstalledTake(api, gatewayName) {
+  return fetch(api.url + "/web_api/show-software-packages-per-targets", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-chkp-sid": api.sid },
+    body: JSON.stringify({ targets: [gatewayName], display: { installed: "yes" } })
+  })
+    .then(function (resp) {
+      if (!resp.ok) {
+        throw new Error("show-software-packages-per-targets HTTP " + resp.status);
+      }
+      return resp.json();
+    })
+    .then(function (data) {
+      var target = data.targets && data.targets[0];
+      var packages = target && target.packages && target.packages.installed;
+      return parseInstalledTake(packages);
+    });
+}
+
+/* Submits an auto-detected {name, version, take} the same way gateway-report.sh
+ * does -- same endpoint, same shape -- so the rest of the pipeline (server.py,
+ * reported.py, matcher.py) treats an auto-detected report identically to a
+ * manually-submitted one. */
+function submitReport(name, version, take) {
+  return fetch("/api/report", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: name, version: version, take: take })
+  }).then(function (resp) { return resp.json(); });
+}
+
+/* Only attempted once per tab load (no retry loop): detect the installed Take
+ * via the granted read-only session, submit it, then let the caller re-fetch
+ * advisories now that a report exists. Resolves false on any failure so the
+ * caller can fall back to the manual-script banner rather than hang. */
+function tryAutoDetect(mgmtApi, gwVersion, gwName) {
+  if (!mgmtApi || !mgmtApi.sid || !mgmtApi.url || !gwVersion || !gwName) {
+    return Promise.resolve(false);
+  }
+  return fetchInstalledTake(mgmtApi, gwName)
+    .then(function (take) { return submitReport(gwName, gwVersion, take); })
+    .then(function (result) { return !!(result && result.ok); })
+    .catch(function (err) {
+      console.error("Auto-detection failed, falling back to manual self-report:", err);
+      return false;
+    });
+}
+
+function fetchAdvisories(uid, name, mgmtApi, gwVersion, allowAutoDetect) {
   var url = "/api/gateway/" + encodeURIComponent(uid) + "/advisories";
   if (name) {
+    // name lets the server fall back to self-reported data (gateway-report.sh,
+    // or auto-detection below) when this uid is unknown to the polled inventory
+    // -- e.g. a gateway on a management server advisory-watch has no credentials
+    // for.
     url += "?name=" + encodeURIComponent(name);
   }
   fetch(url)
     .then(function (resp) { return resp.json(); })
-    .then(function (data) { renderAdvisories(data, uid); })
+    .then(function (data) {
+      if (data.unknown && allowAutoDetect) {
+        tryAutoDetect(mgmtApi, gwVersion, name).then(function (detected) {
+          if (detected) {
+            // Re-fetch now that a report exists; don't attempt auto-detection
+            // again even if this second call somehow still comes back unknown.
+            fetchAdvisories(uid, name, mgmtApi, gwVersion, false);
+          } else {
+            removeLoader();
+            showUnknownBanner();
+            renderAdvisories(data, uid);
+          }
+        });
+        return;
+      }
+      renderAdvisories(data, uid);
+    })
     .catch(function (err) {
       removeLoader();
       var message = document.createElement("p");
@@ -166,7 +271,11 @@ function onContext(obj) {
     document.body.appendChild(message);
     return;
   }
-  fetchAdvisories(objects[0].uid, objects[0].name);
+  var gw = objects[0];
+  // Present (with a usable sid) only when extension.json requested
+  // "get-read-only-session" and SmartConsole granted it for this session.
+  var mgmtApi = obj["management-server-api"];
+  fetchAdvisories(gw.uid, gw.name, mgmtApi, gw.version, true);
 }
 
 function removeLoader() {
@@ -181,7 +290,8 @@ function showContext() {
     smxProxy.sendRequest("get-context", null, "onContext");
   } else {
     // Dev-only shim for testing outside SmartConsole: read ?uid=... (and
-    // optionally &name=...) from the URL.
+    // optionally &name=...) from the URL. No management-server-api available
+    // in this mode, so auto-detection is never attempted here.
     var params = new URLSearchParams(window.location.search);
     var uid = params.get("uid");
     if (!uid) {
