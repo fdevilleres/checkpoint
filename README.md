@@ -70,6 +70,20 @@ excludes desktop-only products like SmartConsole and Harmony Endpoint).
    - `GMAIL_ADDRESS` + `GMAIL_APP_PASSWORD` (an [App Password](https://myaccount.google.com/apppasswords),
      not your real Gmail password) — used only to IMAP-append drafts into `[Gmail]/Drafts`
 
+### Multiple management servers (multi-org)
+
+The `.env` server is the primary. To poll additional Check Point Management Servers in the same
+run — e.g. one per team or partner org, each with its own credentials — copy
+`targets.json.example` to `targets.json` (gitignored, since it holds credentials) and add one
+entry per extra server. Each entry needs a unique `name`, a `host`+`port` (or a full `url` for
+Smart-1 Cloud), and either an `api_key` or `username`+`password`.
+
+`check` then merges every server's gateways into one inventory: matching, the opt-in
+installed-Take lookup, and the dashboard all work per-gateway against the server that owns it.
+If any configured server is unreachable during a run, its gateways are skipped for that run and
+the re-check of already-seen advisories is deferred (so an outage at one org can't silently
+erase another org's stored matches).
+
 ## Usage
 
 ```bash

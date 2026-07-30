@@ -1,0 +1,21 @@
+[
+  {
+    "name": "org-b",
+    "host": "203.0.113.10",
+    "port": 443,
+    "domain": "SMC User",
+    "api_key": "org-b-api-key-here"
+  },
+  {
+    "name": "org-c-smart1cloud",
+    "url": "https://xxxx.maas.checkpoint.com",
+    "api_key": "org-c-api-key-here"
+  },
+  {
+    "name": "org-d-userpass",
+    "host": "198.51.100.20",
+    "domain": "SMC User",
+    "username": "advisory-watch-readonly",
+    "password": "org-d-password-here"
+  }
+]

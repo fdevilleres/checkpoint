@@ -1,4 +1,5 @@
 .env
+targets.json
 state.json
 check.log
 server.log

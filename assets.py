@@ -17,6 +17,10 @@ class Gateway:
     version: str = ""
     os_name: str = ""
     blades: list[str] = field(default_factory=list)
+    # Which configured management server this gateway came from (CPTarget name).
+    # Matters once multiple servers are polled: per-gateway lookups (e.g. the
+    # installed-hotfix query) must go to the server that owns the object.
+    target: str = ""
 
 
 def _fetch_full_gateways(client: CPClient, target: str) -> list[dict]:
@@ -54,5 +58,6 @@ def list_gateways(client: CPClient, target: str) -> list[Gateway]:
             version=gw.get("version", ""),
             os_name=gw.get("os-name", ""),
             blades=blades,
+            target=target,
         ))
     return gateways

@@ -33,24 +33,89 @@ import store
 TARGET_NAME = "management"
 
 
-def _build_client() -> CPClient | None:
+TARGETS_FILE = os.path.join(os.path.dirname(__file__), "targets.json")
+
+
+def _build_targets() -> list[CPTarget]:
+    """Primary management server from .env (target name 'management', unchanged),
+    plus any additional servers from targets.json — one entry per management
+    server/org, each with its own credentials. See targets.json.example."""
+    targets: list[CPTarget] = []
+
     mgmt_host = os.getenv("MANAGEMENT_HOST", "").strip()
     s1c_url = os.getenv("S1C_URL", "").strip()
-    domain = os.getenv("DOMAIN", "SMC User").strip() or "SMC User"
-    api_key = os.getenv("API_KEY", "").strip() or None
-    username = os.getenv("USERNAME", "").strip() or None
-    password = os.getenv("PASSWORD", "").strip() or None
-
     if mgmt_host:
         url = f"https://{mgmt_host}:{os.getenv('MANAGEMENT_PORT', '443').strip()}"
     elif s1c_url:
         url = s1c_url
     else:
-        return None
+        url = None
+    if url:
+        targets.append(CPTarget(
+            name=TARGET_NAME, url=url,
+            domain=os.getenv("DOMAIN", "SMC User").strip() or "SMC User",
+            api_key=os.getenv("API_KEY", "").strip() or None,
+            username=os.getenv("USERNAME", "").strip() or None,
+            password=os.getenv("PASSWORD", "").strip() or None,
+            ssl_verify=False,
+        ))
 
-    target = CPTarget(name=TARGET_NAME, url=url, domain=domain,
-                       api_key=api_key, username=username, password=password, ssl_verify=False)
-    return CPClient([target])
+    if os.path.isfile(TARGETS_FILE):
+        import json
+        with open(TARGETS_FILE, "r", encoding="utf-8") as f:
+            entries = json.load(f)
+        seen_names = {t.name for t in targets}
+        for entry in entries:
+            name = (entry.get("name") or "").strip()
+            if not name:
+                print(f"WARNING: targets.json entry without a 'name' skipped: {entry}", file=sys.stderr)
+                continue
+            if name in seen_names:
+                print(f"WARNING: duplicate target name '{name}' in targets.json skipped.", file=sys.stderr)
+                continue
+            host = (entry.get("host") or "").strip()
+            entry_url = (entry.get("url") or "").strip()
+            if host:
+                entry_url = f"https://{host}:{entry.get('port', 443)}"
+            if not entry_url:
+                print(f"WARNING: target '{name}' has no host/url — skipped.", file=sys.stderr)
+                continue
+            targets.append(CPTarget(
+                name=name, url=entry_url,
+                domain=(entry.get("domain") or "SMC User").strip() or "SMC User",
+                api_key=(entry.get("api_key") or "").strip() or None,
+                username=(entry.get("username") or "").strip() or None,
+                password=(entry.get("password") or "").strip() or None,
+                ssl_verify=bool(entry.get("ssl_verify", False)),
+            ))
+            seen_names.add(name)
+
+    return targets
+
+
+def _build_client() -> CPClient | None:
+    targets = _build_targets()
+    return CPClient(targets) if targets else None
+
+
+def _all_gateways(client: CPClient) -> tuple[list, list[str]]:
+    """Gateway inventory across every configured management server. Returns
+    (gateways, failed_target_names). A failed server's gateways are simply
+    absent this run — callers that persist results should treat a non-empty
+    failure list as 'inventory incomplete' and skip rewriting stored results,
+    so one org's outage can't clobber another org's data."""
+    gateways = []
+    failed: list[str] = []
+    for tname in client.target_names:
+        try:
+            gws = list_gateways(client, tname)
+        except Exception as e:
+            print(f"WARNING: could not reach management server '{tname}': {e}", file=sys.stderr)
+            failed.append(tname)
+            continue
+        print(f"  [{tname}] {len(gws)} gateway(s): {', '.join(g.name for g in gws) or '(none)'}")
+        gateways.extend(gws)
+    return gateways, failed
 
 
 def _keywords() -> list[str]:
@@ -128,8 +193,9 @@ def cmd_check(dry_run: bool) -> None:
         sys.exit(1)
 
     print("Fetching gateway inventory from Check Point management…")
-    gateways = list_gateways(client, TARGET_NAME)
-    print(f"  {len(gateways)} gateway(s) found: {', '.join(g.name for g in gateways) or '(none)'}")
+    gateways, failed_targets = _all_gateways(client)
+    print(f"  {len(gateways)} gateway(s) total across {len(client.target_names) - len(failed_targets)} "
+          f"management server(s).")
 
     keywords = _keywords()
     state = store.load()
@@ -217,7 +283,14 @@ def cmd_check(dry_run: bool) -> None:
     # match" for a CVE that genuinely does apply to the new gateway. Re-run matching
     # for already-seen advisories still present in this run's fetch and refresh their
     # stored result, without re-drafting or re-emailing (they're already seen).
-    if already_seen_advisories:
+    if already_seen_advisories and failed_targets:
+        # Re-matching with a partial inventory would rewrite stored results as if
+        # the unreachable server's gateways no longer exist — every CVE matched to
+        # them would silently lose those matches. Keep the existing stored results
+        # until every configured server answers.
+        print(f"Skipping the re-check of already-seen advisories: management server(s) "
+              f"unreachable this run ({', '.join(failed_targets)}), inventory is incomplete.")
+    elif already_seen_advisories:
         refreshed = matcher.match(already_seen_advisories, gateways, keywords,
                                    client=client, target=TARGET_NAME, enable_hotfix_check=_hotfix_check_enabled(),
                                    cp_relevant_products=_cp_advisory_products(), nvd_cpe_lookup=_nvd_cpe_lookup)
@@ -245,7 +318,7 @@ def cmd_add_advisory(source: str, dry_run: bool) -> None:
             source = f.read()
 
     client = _build_client()
-    gateways = list_gateways(client, TARGET_NAME) if client else []
+    gateways = _all_gateways(client)[0] if client else []
     keywords = _keywords()
 
     adv = feeds.fetch_manual(source)
@@ -289,7 +362,7 @@ def cmd_send_draft(cve_id: str, to_addrs: list[str] | None) -> None:
     adv.kev = any(k.cve_id == cve_id for k in feeds.fetch_kev(_keywords()))
 
     client = _build_client()
-    gateways = list_gateways(client, TARGET_NAME) if client else []
+    gateways = _all_gateways(client)[0] if client else []
     results = matcher.match([adv], gateways, _keywords(),
                              client=client, target=TARGET_NAME, enable_hotfix_check=_hotfix_check_enabled(),
                              cp_relevant_products=_cp_advisory_products())

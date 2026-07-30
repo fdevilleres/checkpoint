@@ -157,9 +157,9 @@ def _match_via_cp_advisory(adv: Advisory, gateways: list[Gateway], client, targe
                 confirmed_vulnerable = True
                 eos_uids.add(gw.uid)
             elif row.status == cpadvisories.RowStatus.TAKE_BOUNDED:
-                if enable_hotfix_check and client is not None and target:
+                if enable_hotfix_check and client is not None and (gw.target or target):
                     if gw.uid not in take_cache:
-                        take_cache[gw.uid] = hotfix.get_installed_jhf_take(client, target, gw.name)
+                        take_cache[gw.uid] = hotfix.get_installed_jhf_take(client, gw.target or target, gw.name)
                     installed = take_cache[gw.uid]
                     if installed is None:
                         unconfirmed_take = row.max_vulnerable_take
@@ -274,7 +274,7 @@ def _match_via_sk(adv: Advisory, gateways: list[Gateway], client, target: str,
         if gw_version in sk_info.required_takes:
             required = sk_info.required_takes[gw_version]
             if gw.uid not in take_cache:
-                take_cache[gw.uid] = hotfix.get_installed_jhf_take(client, target, gw.name)
+                take_cache[gw.uid] = hotfix.get_installed_jhf_take(client, gw.target or target, gw.name)
             installed = take_cache[gw.uid]
             if installed is None:
                 any_ambiguous = True
