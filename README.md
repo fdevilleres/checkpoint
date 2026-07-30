@@ -35,9 +35,20 @@ Per advisory it gives exact per-version data like *"R82.10: Take 158 or below is
 far more precise than NVD's CPE version ranges, and unlike scraping individual sk articles
 (`skfix.py`, now a fallback), it hasn't hit any bot-detection/rate-limiting in testing.
 
-1. **Check Point's feed → required Take**: for each gateway version present in the advisory's
-   product table, `matcher.py` knows the exact Take that fixes it (or that the version is
-   end-of-support with no Take that helps, or explicitly not affected at all).
+1. **Check Point's feed → vulnerability threshold**: for each gateway version in the advisory's
+   product table, the feed gives the highest Take that is still *vulnerable* (e.g. *"Take 19 or
+   below"*), or that the version is end-of-support with no Take that helps, or explicitly not
+   affected at all.
+1b. **sk-article Solution section → the Take that actually contains the fix.** These are two
+   different numbers and the fix Take is **not** "threshold + 1": for CVE-2026-50751 on R82.10
+   the threshold is Take 19, but the fix only shipped in Take 24 (Takes 20–23 don't carry it).
+   `skfix.py` therefore reads the Take strictly from the article's *"Recommended step - Install
+   Jumbo Hotfix Accumulator → The fix is included in these Jumbo Hotfix Accumulators"* table —
+   deliberately ignoring the same article's vulnerable-configurations list, its "Hotfix on top"
+   download table, and its revision history, all of which quote other Take numbers. Results are
+   cached in `sk_cache.json` for a week, since Check Point's CDN bot-challenges repeated
+   automated requests. If the article can't be read, the tool falls back to `threshold + 1` and
+   **labels it as approximate** rather than presenting a Take that may not contain the fix.
 2. **Gateway → installed Take** *(opt-in, see below)*: `hotfix.py` queries the Management API's
    `show-software-packages-per-targets` — a read-only lookup against the management server itself,
    nothing executes on the gateway — and parses the actually-installed JHF Take number.

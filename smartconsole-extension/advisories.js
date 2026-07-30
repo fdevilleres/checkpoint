@@ -40,12 +40,14 @@ function addRow(table, adv, gwUid) {
 
   var cellStatus = row.insertCell(2);
   var gap = gwUid && adv.gateway_take_gap ? adv.gateway_take_gap[gwUid] : null;
-  var threshold = gwUid && adv.gateway_known_threshold ? adv.gateway_known_threshold[gwUid] : null;
+  var requiredOnly = gwUid && adv.gateway_required_take ? adv.gateway_required_take[gwUid] : null;
   var isEos = gwUid && adv.eos_gateway_uids && adv.eos_gateway_uids.indexOf(gwUid) !== -1;
-  var conflict = gwUid && adv.take_source_conflict ? adv.take_source_conflict[gwUid] : null;
-  var conflictTitle = conflict
-    ? "Check Point's structured advisory feed said Take " + conflict[0] + " required, but its own "
-      + "sk-article says Take " + conflict[1] + " -- using the higher, sk-article number."
+  // "inferred" = we only had the vulnerability threshold, so the Take shown is the
+  // lowest one above the vulnerable range, not the published fix Take. Mark it.
+  var inferred = gwUid && adv.gateway_take_source && adv.gateway_take_source[gwUid] === "inferred";
+  var inferredNote = inferred
+    ? " This is the lowest Take above the vulnerable range, not a confirmed fix Take -- "
+      + "open the advisory for the exact Jumbo Hotfix Accumulator that carries the fix."
     : "";
   if (adv.resolved_not_applicable) {
     var resolvedBadge = document.createElement("span");
@@ -60,19 +62,19 @@ function addRow(table, adv, gwUid) {
   } else if (gap) {
     var gapBadge = document.createElement("span");
     gapBadge.className = "badge badge-critical";
-    gapBadge.innerText = "Install JHF Take " + gap[1] + (conflict ? " *" : "");
+    gapBadge.innerText = "Install JHF Take " + gap[1] + (inferred ? " (approx.)" : "");
     gapBadge.title = "Jumbo Hotfix Accumulator Take " + gap[1] + " or above must be installed. "
-      + "Currently installed: Take " + gap[0] + "." + (conflict ? " " + conflictTitle : "");
+      + "Currently installed: Take " + gap[0] + "." + inferredNote;
     cellStatus.appendChild(gapBadge);
-  } else if (threshold !== null && threshold !== undefined) {
-    var requiredTake = threshold + 1;
-    var thresholdBadge = document.createElement("span");
-    thresholdBadge.className = "badge badge-review";
-    thresholdBadge.innerText = "Install JHF Take " + requiredTake + "+ (unconfirmed)" + (conflict ? " *" : "");
-    thresholdBadge.title = "Jumbo Hotfix Accumulator Take " + requiredTake + " or above is expected to fix "
-      + "this, but the installed Take on this gateway couldn't be confirmed automatically."
-      + (conflict ? " " + conflictTitle : "");
-    cellStatus.appendChild(thresholdBadge);
+  } else if (requiredOnly !== null && requiredOnly !== undefined) {
+    var requiredBadge = document.createElement("span");
+    requiredBadge.className = "badge badge-review";
+    requiredBadge.innerText = "Install JHF Take " + requiredOnly + (inferred ? " (approx.)" : "")
+      + " — installed Take unknown";
+    requiredBadge.title = "Jumbo Hotfix Accumulator Take " + requiredOnly + " or above is required, "
+      + "but the Take currently installed on this gateway couldn't be read automatically."
+      + inferredNote;
+    cellStatus.appendChild(requiredBadge);
   } else if (adv.needs_review) {
     var reviewBadge = document.createElement("span");
     reviewBadge.className = "badge badge-review";

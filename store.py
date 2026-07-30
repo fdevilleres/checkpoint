@@ -72,12 +72,14 @@ def record_result(state: dict, result) -> None:
         # {gateway uid: max_vulnerable_take} -- known Take threshold for this specific
         # gateway that couldn't be confirmed against its installed Take (hotfix check
         # off, or undeterminable). Still attributed to the gateway, just unconfirmed.
-        "gateway_known_threshold": dict(result.gateway_known_threshold),
-        # {gateway uid: [cp_advisory_feed_required_take, sk_article_required_take]} --
-        # only populated when Check Point's own structured feed disagreed with its own
-        # sk-article's Take table; the (higher, more conservative) sk-article number
-        # is what's actually used above, this is just so that's visible, not silent.
-        "take_source_conflict": {uid: list(pair) for uid, pair in result.take_source_conflict.items()},
+        # {gateway uid: required Take} -- the Take to install, for gateways whose
+        # currently-installed Take couldn't be read.
+        "gateway_required_take": dict(result.gateway_required_take),
+        # {gateway uid: "sk" | "inferred"} -- "sk" means the required Take came from
+        # the sk-article's Solution table and is the real fix Take; "inferred" means
+        # only the vulnerability threshold was available, so it's a lower bound and
+        # must not be shown as a definitive "install this Take".
+        "gateway_take_source": dict(result.gateway_take_source),
         "cp_severity": adv.cp_severity,
         "sk_id": adv.sk_id,
     }

@@ -32,14 +32,13 @@ def render_body(result: MatchResult) -> str:
         for gw in result.matched_gateways:
             blades = ", ".join(gw.blades) if gw.blades else "none listed"
             gap = result.gateway_take_gap.get(gw.uid)
-            threshold = result.gateway_known_threshold.get(gw.uid)
-            conflict = result.take_source_conflict.get(gw.uid)
-            conflict_note = ""
-            if conflict:
-                feed_required, sk_required = conflict
-                conflict_note = (f" (Check Point's structured advisory feed said Take {feed_required} "
-                                  f"required, but its own sk-article says Take {sk_required} — using "
-                                  f"the higher, sk-article number)")
+            required_only = result.gateway_required_take.get(gw.uid)
+            # "inferred" means we only had the vulnerability threshold, so the number
+            # is a lower bound, not the published fix Take -- never state it flatly.
+            inferred = result.gateway_take_source.get(gw.uid) == "inferred"
+            caveat = (" — this is the lowest Take above the vulnerable range, not a "
+                       "confirmed fix Take; check the advisory below for the exact "
+                       "Jumbo Hotfix Accumulator that carries the fix") if inferred else ""
             if gw.uid in result.eos_gateway_uids:
                 lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}: "
                               f"end-of-support version, no Jumbo Hotfix fixes this — upgrade required")
@@ -47,12 +46,12 @@ def render_body(result: MatchResult) -> str:
                 installed, required = gap
                 lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}: "
                               f"install Jumbo Hotfix Accumulator Take {required} or above "
-                              f"(currently installed: Take {installed}){conflict_note}")
-            elif threshold is not None:
+                              f"(currently installed: Take {installed}){caveat}")
+            elif required_only is not None:
                 lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}: "
-                              f"install Jumbo Hotfix Accumulator Take {threshold + 1} or above — "
+                              f"install Jumbo Hotfix Accumulator Take {required_only} or above — "
                               f"installed Take couldn't be confirmed automatically "
-                              f"(enable ENABLE_HOTFIX_CHECK to confirm){conflict_note}")
+                              f"(enable ENABLE_HOTFIX_CHECK to confirm){caveat}")
             else:
                 lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}, blades: {blades}")
     elif result.needs_review:
@@ -69,10 +68,10 @@ def render_body(result: MatchResult) -> str:
     elif result.gateway_take_gap:
         lines.append("- Install the required Jumbo Hotfix Accumulator Take (see Check Point's "
                       "fix advisory below) on the affected gateways.")
-    elif result.gateway_known_threshold:
-        lines.append("- The exact Take threshold is known for these gateways, but the installed "
-                      "Take couldn't be confirmed automatically — check manually, or enable "
-                      "ENABLE_HOTFIX_CHECK in .env so this is verified for you next time.")
+    elif result.gateway_required_take:
+        lines.append("- The required Jumbo Hotfix Accumulator Take is known for these gateways, but "
+                      "the installed Take couldn't be confirmed automatically — check manually, or "
+                      "enable ENABLE_HOTFIX_CHECK in .env so this is verified for you next time.")
     elif result.matched_gateways:
         lines.append("- Check the vendor advisory below for the fixed version / hotfix, "
                       "and schedule an upgrade or hotfix install on the affected gateways.")
