@@ -44,21 +44,29 @@ def extension_static(filename):
 def api_gateway_advisories(uid):
     state = store.load()
     matched = store.results_for_gateway(state, uid)
+    name = (request.args.get("name") or "").strip()
 
     # Gateway unknown to the polled inventory (no stored matches) but the
     # extension told us its name and that name has self-reported via the
     # SmartConsole script-repository flow -> serve a live match against the
     # reported version/Take instead of an empty page.
-    name = (request.args.get("name") or "").strip()
     if not matched and name:
         report_payload = reported.advisories_for(name)
         if report_payload is not None:
+            report_payload.setdefault("unknown", False)
             return jsonify(report_payload)
 
+    # Neither a polled result nor a self-report exists for this gateway. An
+    # empty "matched" here would be indistinguishable from a gateway that was
+    # actually checked and found clean -- confirmed live: two real testers on
+    # different, never-reported gateways got byte-for-byte identical responses.
+    # "unknown" tells the extension to say so plainly instead of implying "clean".
+    known = store.is_known_gateway(state, uid)
     return jsonify({
         "matched": matched,
         "unassigned": store.unassigned_results(state),
         "resolved": store.resolved_results(state),
+        "unknown": not known and not matched,
     })
 
 

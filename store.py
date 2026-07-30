@@ -20,6 +20,7 @@ def load(path: str = _DEFAULT_PATH) -> dict:
     state.setdefault("seen_cve_ids", [])
     state.setdefault("last_checked", {})
     state.setdefault("results", {})
+    state.setdefault("known_gateways", {})
     return state
 
 
@@ -102,3 +103,24 @@ def resolved_results(state: dict) -> list[dict]:
     not affect any current gateway — recorded for auditability rather than silently
     dropped, so "checked, doesn't apply" is visibly distinct from "never checked"."""
     return [r for r in state["results"].values() if r.get("resolved_not_applicable")]
+
+
+def set_known_gateways(state: dict, gateways) -> None:
+    """Records which gateway UIDs were actually polled this run, so the dashboard
+    API can tell "polled and genuinely clean" (0 matches, uid present here) apart
+    from "never heard of this uid" (0 matches, uid absent) -- both look identical
+    as an empty matched list otherwise. Confirmed live: two real external testers
+    on different, never-reported gateways got byte-for-byte identical responses,
+    which reads as "you're clean" when the truth is "we've never checked you".
+
+    Callers should only call this with a complete inventory (skip it if any
+    configured management server was unreachable this run), same reasoning as
+    the already-seen advisory refresh: a partial inventory must not shrink the
+    known set and make a real gateway look newly-unknown."""
+    state["known_gateways"] = {
+        gw.uid: {"name": gw.name, "version": gw.version} for gw in gateways
+    }
+
+
+def is_known_gateway(state: dict, uid: str) -> bool:
+    return uid in state.get("known_gateways", {})

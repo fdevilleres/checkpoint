@@ -99,6 +99,20 @@ function addRow(table, adv, gwUid) {
 function renderAdvisories(data, gwUid) {
   removeLoader();
 
+  if (data.unknown) {
+    // Not a "no results": this gateway has never been polled by this server,
+    // and no self-report exists for it either -- an empty matched list here
+    // would be indistinguishable from "checked and clean", which is false.
+    var banner = document.createElement("div");
+    banner.className = "unknown-banner";
+    banner.innerHTML =
+      "<strong>This gateway hasn't been checked yet.</strong> It isn't in this server's " +
+      "polled inventory, and no self-report has been submitted for it. Run " +
+      "<code>gateway-report.sh</code> from the SmartConsole Scripts Repository against this " +
+      "gateway, then reopen this tab.";
+    document.body.insertBefore(banner, document.body.firstChild);
+  }
+
   var matched = data.matched || [];
   var unassigned = data.unassigned || [];
   var resolved = data.resolved || [];

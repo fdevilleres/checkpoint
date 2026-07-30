@@ -200,6 +200,13 @@ def cmd_check(dry_run: bool) -> None:
     keywords = _keywords()
     state = store.load()
 
+    if not failed_targets:
+        # Lets the dashboard tell "polled and genuinely clean" apart from "never
+        # heard of this gateway" -- both otherwise look like an empty matched list.
+        # Skipped on a partial inventory so one server's outage can't make a real
+        # gateway look newly-unknown.
+        store.set_known_gateways(state, gateways)
+
     print("Fetching CISA KEV catalog…")
     kev_advisories = feeds.fetch_kev(keywords)
     print(f"  {len(kev_advisories)} matching entr(y/ies)")

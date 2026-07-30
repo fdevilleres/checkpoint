@@ -40,3 +40,18 @@ details summary {
   font-weight: bold;
   margin-top: 8px;
 }
+
+.unknown-banner {
+  background: #fff3cd;
+  border: 1px solid #b06a00;
+  color: #4a3200;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  border-radius: 3px;
+}
+
+.unknown-banner code {
+  background: #00000014;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
