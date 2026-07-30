@@ -74,6 +74,14 @@ _VERSION_TOKEN_RE = re.compile(r"(R\d+(?:\.\d+)?)")
 _CACHE_PATH = os.path.join(os.path.dirname(__file__), "sk_cache.json")
 _CACHE_TTL = 7 * 24 * 3600.0  # sk articles change on the order of weeks
 
+# Set by callers that run inside a user-facing request (server.py via reported.py).
+# A cache miss then returns None immediately instead of making a network call --
+# without this, a single uncached article costs an HTTP timeout plus a retry delay,
+# and a page needing ten of them hangs for over a minute. Measured live: the same
+# request took 60s+ uncached and 0.3s cached. The CLI leaves this False so `check`
+# is what actually populates the cache.
+CACHE_ONLY = False
+
 
 @dataclass
 class SkFixInfo:
@@ -197,6 +205,11 @@ def fetch_sk_fix_info(sk_url: str, retries: int = 1, retry_delay: float = 5.0,
         cached = _cache_get(sk_url)
         if cached is not None:
             return cached
+
+    if CACHE_ONLY:
+        # Treated exactly like a WAF block: the caller falls back to the
+        # vulnerability threshold and labels the result approximate.
+        return None
 
     html = None
     for attempt in range(retries + 1):

@@ -25,13 +25,24 @@ if [ -z "$VER" ]; then
 fi
 
 # JHF line looks like: "HOTFIX_R82_20_T313_EA_JHF_MAIN Take: 20"
-TAKE=$(timeout 60 cpinfo -y all 2>/dev/null | grep "HOTFIX" | grep "JHF" \
+CPINFO_OUT=$(timeout 60 cpinfo -y all 2>/dev/null)
+TAKE=$(echo "$CPINFO_OUT" | grep "HOTFIX" | grep "JHF" \
         | grep -oE 'Take: *[0-9]+' | grep -oE '[0-9]+' | sort -n | tail -1)
-if [ -z "$TAKE" ]; then
-    TAKE_JSON="null"
-    echo "No JHF Take found in cpinfo output — reporting take as unknown."
-else
+
+if [ -n "$TAKE" ]; then
     TAKE_JSON="$TAKE"
+elif [ -n "$CPINFO_OUT" ]; then
+    # cpinfo ran and returned output, but named no JHF Take: nothing is installed.
+    # Report 0, not null -- "no Jumbo installed" is a confirmed answer, and an
+    # unpatched gateway is exactly the case that must not be downgraded to
+    # "installed Take unknown".
+    TAKE_JSON="0"
+    echo "No Jumbo Hotfix Accumulator installed — reporting Take 0."
+else
+    # cpinfo produced nothing (timed out, missing, or not permitted) -- genuinely
+    # unknown, so say so rather than claiming an unpatched box.
+    TAKE_JSON="null"
+    echo "WARNING: cpinfo returned no output — reporting installed Take as unknown."
 fi
 
 echo "Reporting: name=$NAME version=$VER take=$TAKE_JSON -> $SERVER"
