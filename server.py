@@ -19,8 +19,9 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory
 
+import reported
 import store
 
 EXTENSION_DIR = os.path.join(os.path.dirname(__file__), "smartconsole-extension")
@@ -42,11 +43,34 @@ def extension_static(filename):
 @app.route("/api/gateway/<uid>/advisories")
 def api_gateway_advisories(uid):
     state = store.load()
+    matched = store.results_for_gateway(state, uid)
+
+    # Gateway unknown to the polled inventory (no stored matches) but the
+    # extension told us its name and that name has self-reported via the
+    # SmartConsole script-repository flow -> serve a live match against the
+    # reported version/Take instead of an empty page.
+    name = (request.args.get("name") or "").strip()
+    if not matched and name:
+        report_payload = reported.advisories_for(name)
+        if report_payload is not None:
+            return jsonify(report_payload)
+
     return jsonify({
-        "matched": store.results_for_gateway(state, uid),
+        "matched": matched,
         "unassigned": store.unassigned_results(state),
         "resolved": store.resolved_results(state),
     })
+
+
+@app.route("/api/report", methods=["POST"])
+def api_report():
+    """Self-report endpoint for gateway-report.sh (SmartConsole script repository).
+    Body: {"name": "...", "version": "R82.10", "take": 24 | null}. As
+    unauthenticated as the rest of this dashboard -- see reported.py's trust note."""
+    data = request.get_json(force=True, silent=True) or {}
+    ok, message = reported.save_report(data.get("name"), data.get("version"), data.get("take"))
+    status = 200 if ok else 400
+    return jsonify({"ok": ok, "message": message}), status
 
 
 if __name__ == "__main__":

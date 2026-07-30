@@ -151,6 +151,34 @@ Notes:
 - Uses a self-signed HTTPS cert (`ssl_context='adhoc'`) by default — explicitly allowed per the
   docs. Set `SSL_CERT_FILE`/`SSL_KEY_FILE` in `.env` to use a real cert instead (see below).
 
+## Self-reported gateways (no Management API access needed)
+
+`targets.json` (above) requires the advisory-watch operator to hold credentials to every polled
+management server — a real ask for an external org. `gateway-report.sh` is the credential-free
+alternative: an admin on the *other* org's side runs it from their **own** SmartConsole's Scripts
+Repository against their gateway object (or their SMS). It executes on the gateway using their
+already-authenticated SmartConsole session — no credentials ever change hands with the
+advisory-watch operator. The script reads `fw ver` + the installed JHF Take from `cpinfo`
+locally and POSTs just `{name, version, take}` to this server's `/api/report`.
+
+Setup on their side:
+1. In SmartConsole: **Manage & Settings → Blades → Scripts Repository** (or the equivalent for
+   your version) → add `gateway-report.sh` as a new script.
+2. Run it against the gateway object, passing this server's URL and (if the object name differs
+   from the gateway's Gaia hostname) the object name: `gateway-report.sh https://your-server:5443 GW-NAME`.
+3. Open that gateway's **Advisories** tab as normal — the extension already sends the selected
+   object's name, so the dashboard automatically falls back to the self-reported version/Take the
+   moment no polled match exists for that UID, with no extra configuration needed.
+
+This path matches live at request time (not persisted into the shared `state.json`) against the
+same Check Point advisory feed + NVD fallback the polled path uses, so results are consistent
+between the two — just recomputed fresh each time rather than cached. Reports live in
+`reported.json`, gitignored, separate from `state.json` so a `check` sync never overwrites them.
+
+**Same no-authentication caveat as the rest of this dashboard** — `/api/report` accepts a report
+for any name from anyone who can reach the server. Fine for a trusted test group; add
+authentication before wider exposure.
+
 ## Deploying this for a team
 
 By default `server.py` only listens on `127.0.0.1` — nobody but you can reach it. To let

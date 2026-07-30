@@ -303,15 +303,21 @@ def _match_via_sk(adv: Advisory, gateways: list[Gateway], client, target: str,
 def match(advisories: list[Advisory], gateways: list[Gateway], keywords: list[str],
           *, client=None, target: str | None = None, enable_hotfix_check: bool = False,
           cp_relevant_products: tuple[str, ...] | None = None,
-          nvd_cpe_lookup=None) -> list[MatchResult]:
+          nvd_cpe_lookup=None, take_cache: dict[str, int | None] | None = None) -> list[MatchResult]:
     """nvd_cpe_lookup: optional cve_id -> list[CpeRange] callback. Used only when
     Check Point's own advisory feed has relevant product rows but none cover any
     current gateway's exact version yet -- a cp_advisory-sourced Advisory carries no
     CPE data of its own, so without this the tool can't tell "not yet assessed by
     Check Point" apart from "genuinely doesn't apply," even when NVD's independent
     CPE ranges would resolve it. Called lazily (only for that ambiguous case), not
-    for every advisory, to avoid an NVD round-trip per run."""
-    take_cache: dict[str, int | None] = {}
+    for every advisory, to avoid an NVD round-trip per run.
+
+    take_cache: optional prefilled {gateway uid: installed Take}. Lets a caller that
+    already knows a gateway's Take (e.g. self-reported by the gateway itself via the
+    SmartConsole script-repository flow) reuse the full Take-gap logic without any
+    Management API lookup -- prefilled entries are used as-is, never re-queried."""
+    if take_cache is None:
+        take_cache = {}
     relevant_products_lower = (
         {p.lower() for p in cp_relevant_products} if cp_relevant_products else _CP_RELEVANT_PRODUCTS_LOWER
     )

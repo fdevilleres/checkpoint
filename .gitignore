@@ -1,6 +1,7 @@
 .env
 targets.json
 state.json
+reported.json
 check.log
 server.log
 __pycache__/

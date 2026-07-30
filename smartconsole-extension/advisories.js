@@ -111,8 +111,15 @@ function renderAdvisories(data, gwUid) {
   }
 }
 
-function fetchAdvisories(uid) {
-  fetch("/api/gateway/" + encodeURIComponent(uid) + "/advisories")
+function fetchAdvisories(uid, name) {
+  // name lets the server fall back to self-reported data (gateway-report.sh)
+  // when this uid is unknown to the polled inventory — e.g. a gateway on a
+  // management server the advisory-watch operator has no credentials for.
+  var url = "/api/gateway/" + encodeURIComponent(uid) + "/advisories";
+  if (name) {
+    url += "?name=" + encodeURIComponent(name);
+  }
+  fetch(url)
     .then(function (resp) { return resp.json(); })
     .then(function (data) { renderAdvisories(data, uid); })
     .catch(function (err) {
@@ -132,7 +139,7 @@ function onContext(obj) {
     document.body.appendChild(message);
     return;
   }
-  fetchAdvisories(objects[0].uid);
+  fetchAdvisories(objects[0].uid, objects[0].name);
 }
 
 function removeLoader() {
@@ -146,7 +153,8 @@ function showContext() {
   if (typeof smxProxy !== "undefined") {
     smxProxy.sendRequest("get-context", null, "onContext");
   } else {
-    // Dev-only shim for testing outside SmartConsole: read ?uid=... from the URL.
+    // Dev-only shim for testing outside SmartConsole: read ?uid=... (and
+    // optionally &name=...) from the URL.
     var params = new URLSearchParams(window.location.search);
     var uid = params.get("uid");
     if (!uid) {
@@ -156,6 +164,6 @@ function showContext() {
       document.body.appendChild(message);
       return;
     }
-    onContext({ event: { objects: [{ uid: uid, type: "simple-gateway" }] } });
+    onContext({ event: { objects: [{ uid: uid, name: params.get("name") || "", type: "simple-gateway" }] } });
   }
 }
