@@ -1,3 +1,4 @@
 python-dotenv>=1.0
 flask>=3.0
 pyopenssl>=24.0
+tzdata>=2024.1; sys_platform == "win32"

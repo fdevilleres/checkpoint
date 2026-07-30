@@ -16,10 +16,12 @@ CVE data, so only do this on a network you trust.
 
 from __future__ import annotations
 import os
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 load_dotenv()
 
 from flask import Flask, jsonify, request, send_from_directory
+from werkzeug.serving import WSGIRequestHandler
 
 import reported
 import store
@@ -31,8 +33,31 @@ PUBLIC_HOST = os.getenv("SERVER_PUBLIC_HOST", "").strip() or BIND_HOST
 PORT = int(os.getenv("SERVER_PORT", "5443").strip() or "5443")
 SSL_CERT_FILE = os.getenv("SSL_CERT_FILE", "").strip()
 SSL_KEY_FILE = os.getenv("SSL_KEY_FILE", "").strip()
+# Werkzeug's dev-server access log otherwise prints an unlabeled server-local
+# timestamp -- on a UTC-configured host (the common case for a cloud VM) that
+# silently reads as "wrong" to anyone checking it against their own wall clock.
+# Always show UTC explicitly, plus a named zone for convenience if one is set.
+LOG_TIMEZONE = os.getenv("LOG_TIMEZONE", "America/New_York").strip()
 
 app = Flask(__name__)
+
+
+class _TimestampedRequestHandler(WSGIRequestHandler):
+    """Access-log timestamps labelled with an explicit zone, since an
+    unlabelled one is only unambiguous if you already know the server's own
+    timezone -- which a remote reader usually doesn't."""
+
+    def log_date_time_string(self) -> str:
+        now = datetime.now(timezone.utc)
+        stamp = now.strftime("%d/%b/%Y %H:%M:%S UTC")
+        if LOG_TIMEZONE:
+            try:
+                from zoneinfo import ZoneInfo
+                local = now.astimezone(ZoneInfo(LOG_TIMEZONE))
+                stamp += local.strftime(" (%H:%M:%S %Z)")
+            except Exception:
+                pass  # unknown/misconfigured LOG_TIMEZONE -- UTC alone still printed
+        return stamp
 
 
 @app.route("/<path:filename>")
@@ -93,4 +118,5 @@ if __name__ == "__main__":
     if BIND_HOST != "127.0.0.1":
         print("NOTE: bound beyond localhost with no authentication — "
               "make sure only your intended audience can reach this host/port.")
-    app.run(host=BIND_HOST, port=PORT, ssl_context=ssl_context, threaded=True)
+    app.run(host=BIND_HOST, port=PORT, ssl_context=ssl_context, threaded=True,
+            request_handler=_TimestampedRequestHandler)
