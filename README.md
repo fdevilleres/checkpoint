@@ -195,6 +195,26 @@ Setup on their side:
    object's name, so the dashboard automatically falls back to the self-reported version/Take the
    moment no polled match exists for that UID, with no extra configuration needed.
 
+### Why the tab doesn't just detect this itself
+
+It partially does. The extension requests `details-level: full` and the `get-read-only-session`
+permission, so it always has the gateway's **version** for free — no network call, straight off the
+`get-context` response. It also *attempts* to read the installed **Take** the same way, by calling
+`show-software-packages-per-targets` directly against the tester's own management server, using the
+read-only session SmartConsole grants their login.
+
+Confirmed live against a real, correctly-configured SmartConsole session (permission approved,
+context populated with a valid `sid`/version): that direct Take fetch fails with `Failed to fetch`.
+Browsers collapse two distinct failures into that one generic message, and either is plausible here
+and outside this tool's control: the Management API very likely doesn't send CORS headers permitting
+a cross-origin request from this extension's origin, and/or the tester's management server uses a
+self-signed certificate a browser `fetch()` has no way to trust (the `certificate-fingerprint` data
+SmartConsole provides isn't a browser-usable trust-pinning mechanism). This is left in as a
+best-effort attempt — it fails fast and falls back safely, and may work in an environment with a
+CA-trusted certificate — but `gateway-report.sh` remains the reliable path for the installed Take on
+a foreign management server. Failures are visible in `client_diagnostics.log` via `/api/client-log`
+if you want to confirm which failure mode a given tester hit.
+
 This path matches live at request time (not persisted into the shared `state.json`) against the
 same Check Point advisory feed + NVD fallback the polled path uses, so results are consistent
 between the two — just recomputed fresh each time rather than cached. Reports live in
