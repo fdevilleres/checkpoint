@@ -51,11 +51,6 @@ _lock = threading.Lock()
 _CACHE_TTL = 900.0
 _cache: dict = {"fetched_at": 0.0, "advisories": None, "nvd_ranges": {}}
 
-# A reported gateway was never assigned a management UID by us, so it gets a
-# synthetic one -- stable per name, never colliding with real Check Point GUIDs.
-_UID_PREFIX = "reported:"
-
-
 def _load_reports() -> dict:
     if not os.path.exists(_REPORTS_PATH):
         return {}
@@ -139,15 +134,23 @@ def _relevant_advisories(version: str) -> list:
     return keep
 
 
-def advisories_for(name: str) -> dict | None:
+def advisories_for(name: str, uid: str) -> dict | None:
     """Full dashboard payload for a self-reported gateway, in the exact shape
     /api/gateway/<uid>/advisories serves for polled gateways -- advisories.js
-    renders both identically. Returns None if no report exists for this name."""
+    renders both identically. Returns None if no report exists for this name.
+
+    `uid` must be the REAL SmartConsole gateway UID from the request URL, not a
+    synthetic one -- the caller (advisories.js) looks up gateway_take_gap /
+    gateway_required_take / eos_gateway_uids by that same real UID. An earlier
+    version of this function invented its own "reported:<name>" UID here, which
+    silently broke every per-gateway status badge for self-reported gateways:
+    the JSON always had correct gap/required data, just keyed by a UID nothing
+    on the front end ever looked up -- so it always fell through to a bare
+    "Matched"/"Needs review" no matter what the actual Take comparison found."""
     report = get_report(name)
     if report is None:
         return None
 
-    uid = _UID_PREFIX + report["name"].lower()
     gw = Gateway(name=report["name"], uid=uid, type="simple-gateway",
                  version=report["version"], target="")
     take_cache = {uid: report["take"]}

@@ -78,7 +78,7 @@ def api_gateway_advisories(uid):
     # SmartConsole script-repository flow -> serve a live match against the
     # reported version/Take instead of an empty page.
     if not matched and name:
-        report_payload = reported.advisories_for(name)
+        report_payload = reported.advisories_for(name, uid)
         if report_payload is not None:
             report_payload.setdefault("unknown", False)
             return jsonify(report_payload)
