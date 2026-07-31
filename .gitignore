@@ -8,3 +8,4 @@ server.log
 __pycache__/
 *.pyc
 run_output.txt
+client_diagnostics.log

@@ -209,18 +209,50 @@ function submitReport(name, version, take) {
   }).then(function (resp) { return resp.json(); });
 }
 
+/* Best-effort diagnostic channel: lets us see WHY auto-detection failed on a
+ * tester's machine (permission never granted vs. a network/TLS error calling
+ * their own management server) without needing console access on their side.
+ * Never affects matching -- purely observational, and failures here are
+ * swallowed so logging itself can never break the fallback path. */
+function reportClientLog(name, stage, detail) {
+  try {
+    fetch("/api/client-log", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name, stage: stage, detail: String(detail) })
+    }).catch(function () {});
+  } catch (e) { /* ignore */ }
+}
+
 /* Only attempted once per tab load (no retry loop): detect the installed Take
  * via the granted read-only session, submit it, then let the caller re-fetch
  * advisories now that a report exists. Resolves false on any failure so the
- * caller can fall back to the manual-script banner rather than hang. */
+ * caller can fall back to the manual-script banner rather than hang. Each
+ * failure stage is reported distinctly -- "no context at all" (permission
+ * never granted, most likely an install that predates this feature) is a very
+ * different problem from "context present but the fetch itself failed" (most
+ * likely the tester's own management server uses a certificate the browser
+ * doesn't trust, which a plain fetch() has no way to work around). */
 function tryAutoDetect(mgmtApi, gwVersion, gwName) {
-  if (!mgmtApi || !mgmtApi.sid || !mgmtApi.url || !gwVersion || !gwName) {
+  if (!mgmtApi) {
+    reportClientLog(gwName, "no-context",
+      "management-server-api missing from get-context -- permission not granted, " +
+      "or this install predates the permission being added to the manifest");
+    return Promise.resolve(false);
+  }
+  if (!mgmtApi.sid || !mgmtApi.url) {
+    reportClientLog(gwName, "incomplete-context", JSON.stringify(mgmtApi));
+    return Promise.resolve(false);
+  }
+  if (!gwVersion || !gwName) {
+    reportClientLog(gwName, "missing-basics", "gwVersion=" + gwVersion + " gwName=" + gwName);
     return Promise.resolve(false);
   }
   return fetchInstalledTake(mgmtApi, gwName)
     .then(function (take) { return submitReport(gwName, gwVersion, take); })
     .then(function (result) { return !!(result && result.ok); })
     .catch(function (err) {
+      reportClientLog(gwName, "fetch-failed", (err && err.message) || String(err));
       console.error("Auto-detection failed, falling back to manual self-report:", err);
       return false;
     });

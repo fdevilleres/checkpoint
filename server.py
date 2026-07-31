@@ -27,6 +27,7 @@ import reported
 import store
 
 EXTENSION_DIR = os.path.join(os.path.dirname(__file__), "smartconsole-extension")
+CLIENT_LOG_PATH = os.path.join(os.path.dirname(__file__), "client_diagnostics.log")
 
 BIND_HOST = os.getenv("SERVER_BIND_HOST", "127.0.0.1").strip() or "127.0.0.1"
 PUBLIC_HOST = os.getenv("SERVER_PUBLIC_HOST", "").strip() or BIND_HOST
@@ -93,6 +94,28 @@ def api_gateway_advisories(uid):
         "resolved": store.resolved_results(state),
         "unknown": not known and not matched,
     })
+
+
+@app.route("/api/client-log", methods=["POST"])
+def api_client_log():
+    """Best-effort diagnostic channel for advisories.js's auto-detection path
+    (tryAutoDetect). Lets us see WHY it failed on a tester's machine -- no
+    "management-server-api" in context at all (permission never granted) vs. the
+    context being present but the direct fetch() itself failing (most likely a
+    certificate the browser doesn't trust on their management server) --
+    without needing console access on their side. Purely observational: never
+    read by matching or persisted anywhere matching logic touches."""
+    data = request.get_json(force=True, silent=True) or {}
+    line = "{} | name={} | stage={} | detail={}".format(
+        datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        data.get("name"), data.get("stage"), data.get("detail"),
+    )
+    try:
+        with open(CLIENT_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+    return jsonify({"ok": True})
 
 
 @app.route("/api/report", methods=["POST"])
