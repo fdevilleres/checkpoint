@@ -5,14 +5,20 @@
  * as this page).
  *
  * When the gateway is unknown to this server (not in its polled inventory, no
- * self-report on file) and SmartConsole granted the "get-read-only-session"
- * permission, this tries to auto-detect the gateway's version + installed Jumbo
- * Hotfix Take itself -- using the CURRENT USER'S OWN read-only Management API
- * session, obtained from the extension context, never advisory-watch's server.
- * No credentials are shared with advisory-watch in either direction. If that
- * isn't possible (permission not granted, call fails, management server
- * unreachable from here), the tab falls back to telling the tester to run
- * gateway-report.sh manually -- see MOP-AW-001 section 6.
+ * self-report on file), this tries to auto-detect the gateway's version +
+ * installed Jumbo Hotfix Take itself -- via smxProxy's "run-readonly-command"
+ * bridge (requires "get-read-only-session" + "run-read-only-commands" in
+ * extension.json), which runs the read-only Management API call inside the
+ * native SmartConsole host under the CURRENT USER'S OWN session and returns
+ * the result by callback. This is NOT a browser fetch() to the management
+ * server -- that path was tried first and confirmed always CORS-blocked
+ * (the Management API never sends Access-Control-Allow-Origin, so no
+ * client-side fix exists); smxProxy sidesteps it entirely since no
+ * cross-origin request is ever made. No credentials are shared with
+ * advisory-watch in either direction. If auto-detection isn't possible
+ * (permission not granted, older SmartConsole, call fails), the tab falls
+ * back to telling the tester to run gateway-report.sh manually -- see
+ * MOP-AW-001 section 6.
  */
 
 function severityBadgeClass(severity) {
@@ -52,9 +58,13 @@ function addRow(table, adv, gwUid) {
   var gap = gwUid && adv.gateway_take_gap ? adv.gateway_take_gap[gwUid] : null;
   var requiredOnly = gwUid && adv.gateway_required_take ? adv.gateway_required_take[gwUid] : null;
   var isEos = gwUid && adv.eos_gateway_uids && adv.eos_gateway_uids.indexOf(gwUid) !== -1;
+  var takeSource = gwUid && adv.gateway_take_source ? adv.gateway_take_source[gwUid] : null;
+  // "latest" = Check Point's own JHF downloads page for this version, not just the
+  // Take that happens to fix this one CVE -- the number to actually install.
+  var isLatest = takeSource === "latest";
   // "inferred" = we only had the vulnerability threshold, so the Take shown is the
   // lowest one above the vulnerable range, not the published fix Take. Mark it.
-  var inferred = gwUid && adv.gateway_take_source && adv.gateway_take_source[gwUid] === "inferred";
+  var inferred = takeSource === "inferred";
   var inferredNote = inferred
     ? " This is the lowest Take above the vulnerable range, not a confirmed fix Take -- "
       + "open the advisory for the exact Jumbo Hotfix Accumulator that carries the fix."
@@ -72,16 +82,24 @@ function addRow(table, adv, gwUid) {
   } else if (gap) {
     var gapBadge = document.createElement("span");
     gapBadge.className = "badge badge-critical";
-    gapBadge.innerText = "Install JHF Take " + gap[1] + (inferred ? " (approx.)" : "");
-    gapBadge.title = "Jumbo Hotfix Accumulator Take " + gap[1] + " or above must be installed. "
+    gapBadge.innerText = isLatest
+      ? "Update to JHF Take " + gap[1] + " (latest)"
+      : "Install JHF Take " + gap[1] + (inferred ? " (approx.)" : "");
+    gapBadge.title = (isLatest
+        ? "Take " + gap[1] + " is the latest Jumbo Hotfix Accumulator available for this version. "
+        : "Jumbo Hotfix Accumulator Take " + gap[1] + " or above must be installed. ")
       + "Currently installed: Take " + gap[0] + "." + inferredNote;
     cellStatus.appendChild(gapBadge);
   } else if (requiredOnly !== null && requiredOnly !== undefined) {
     var requiredBadge = document.createElement("span");
     requiredBadge.className = "badge badge-review";
-    requiredBadge.innerText = "Install JHF Take " + requiredOnly + (inferred ? " (approx.)" : "")
+    requiredBadge.innerText = (isLatest
+        ? "Update to JHF Take " + requiredOnly + " (latest)"
+        : "Install JHF Take " + requiredOnly + (inferred ? " (approx.)" : ""))
       + " — installed Take unknown";
-    requiredBadge.title = "Jumbo Hotfix Accumulator Take " + requiredOnly + " or above is required, "
+    requiredBadge.title = (isLatest
+        ? "Take " + requiredOnly + " is the latest Jumbo Hotfix Accumulator available for this version, "
+        : "Jumbo Hotfix Accumulator Take " + requiredOnly + " or above is required, ")
       + "but the Take currently installed on this gateway couldn't be read automatically."
       + inferredNote;
     cellStatus.appendChild(requiredBadge);
@@ -171,44 +189,59 @@ function parseInstalledTake(packages) {
 }
 
 /*
- * Calls show-software-packages-per-targets directly against the Management API,
- * using the read-only session SmartConsole granted THIS extension instance for
- * THIS user -- never advisory-watch's own credentials, which it doesn't have for
- * a foreign management server anyway. Requires "get-read-only-session" in
- * extension.json's requested-permissions; api comes from the get-context
- * response's "management-server-api" field.
+ * Calls show-software-packages-per-targets through smxProxy's "run-readonly-command"
+ * bridge -- NOT a browser fetch() against the Management API. That distinction is
+ * the whole point: a direct fetch() from this page's origin to a tester's own
+ * management server is blocked by CORS every time (confirmed live -- the
+ * Management API never sends Access-Control-Allow-Origin, so no client-side fix
+ * exists). smxProxy.sendRequest runs the command inside the native SmartConsole
+ * host using the current user's own session and returns the result via a
+ * callback, so no cross-origin browser request ever happens. Requires
+ * "run-read-only-commands" (alongside "get-read-only-session") in
+ * extension.json's requested-permissions.
  *
- * api.url's own convention is undocumented, and confirmed live to already
- * include "/web_api" (a naive "+ /web_api/<command>" produced a real, logged
- * ".../web_api/web_api/show-..." request that could only ever 404/CORS-fail
- * regardless of the server's actual policy) -- so this only appends it when
- * not already present, tolerating a trailing slash either way.
+ * smxProxy's callback argument is a *name*, not a function reference -- it calls
+ * window[name](result) -- so each call registers a one-off global callback and
+ * cleans it up once invoked.
  */
-function apiCommandUrl(baseUrl, command) {
-  var base = (baseUrl || "").replace(/\/+$/, "");
-  if (!/\/web_api$/i.test(base)) {
-    base += "/web_api";
-  }
-  return base + "/" + command;
+var _smxCallbackSeq = 0;
+function callReadOnlyCommand(command, parameters) {
+  return new Promise(function (resolve, reject) {
+    var cbName = "_awRoCb" + (++_smxCallbackSeq);
+    window[cbName] = function (result) {
+      delete window[cbName];
+      resolve(result);
+    };
+    try {
+      smxProxy.sendRequest("run-readonly-command", { command: command, parameters: parameters }, cbName);
+    } catch (e) {
+      delete window[cbName];
+      reject(e);
+    }
+  });
 }
 
-function fetchInstalledTake(api, gatewayName) {
-  return fetch(apiCommandUrl(api.url, "show-software-packages-per-targets"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-chkp-sid": api.sid },
-    body: JSON.stringify({ targets: [gatewayName], display: { installed: "yes" } })
-  })
-    .then(function (resp) {
-      if (!resp.ok) {
-        throw new Error("show-software-packages-per-targets HTTP " + resp.status);
-      }
-      return resp.json();
-    })
-    .then(function (data) {
-      var target = data.targets && data.targets[0];
-      var packages = target && target.packages && target.packages.installed;
-      return parseInstalledTake(packages);
-    });
+/* Management API responses that come back through smxProxy are sometimes
+ * wrapped in a "response" field and sometimes not, depending on SmartConsole
+ * version -- unwrap defensively either way. */
+function unwrapSmxResponse(raw) {
+  if (!raw) {
+    return null;
+  }
+  var data = raw.response !== undefined ? raw.response : raw;
+  return Array.isArray(data) ? data[0] || {} : data;
+}
+
+function fetchInstalledTake(gatewayName) {
+  return callReadOnlyCommand("show-software-packages-per-targets", {
+    targets: [gatewayName],
+    display: { installed: "yes" }
+  }).then(function (raw) {
+    var data = unwrapSmxResponse(raw);
+    var target = data && data.targets && data.targets[0];
+    var packages = target && target.packages && target.packages.installed;
+    return parseInstalledTake(packages);
+  });
 }
 
 /* Submits an auto-detected {name, version, take} the same way gateway-report.sh
@@ -239,40 +272,32 @@ function reportClientLog(name, stage, detail) {
 }
 
 /* Only attempted once per tab load (no retry loop): detect the installed Take
- * via the granted read-only session, submit it, then let the caller re-fetch
- * advisories now that a report exists. Resolves false on any failure so the
- * caller can fall back to the manual-script banner rather than hang. Each
- * failure stage is reported distinctly -- "no context at all" (permission
- * never granted, most likely an install that predates this feature) is a very
- * different problem from "context present but the fetch itself failed" (most
- * likely the tester's own management server uses a certificate the browser
- * doesn't trust, which a plain fetch() has no way to work around). */
-function tryAutoDetect(mgmtApi, gwVersion, gwName) {
-  if (!mgmtApi) {
-    reportClientLog(gwName, "no-context",
-      "management-server-api missing from get-context -- permission not granted, " +
-      "or this install predates the permission being added to the manifest");
-    return Promise.resolve(false);
-  }
-  if (!mgmtApi.sid || !mgmtApi.url) {
-    reportClientLog(gwName, "incomplete-context", JSON.stringify(mgmtApi));
+ * via smxProxy's run-readonly-command bridge, submit it, then let the caller
+ * re-fetch advisories now that a report exists. Resolves false on any failure
+ * so the caller can fall back to the manual-script banner rather than hang.
+ * "no-smxproxy" (dev-shim page load, not real SmartConsole) is a different
+ * problem from "call-failed" (permission not granted, or the command itself
+ * errored) -- reported distinctly so a tester's log tells us which. */
+function tryAutoDetect(gwVersion, gwName) {
+  if (typeof smxProxy === "undefined") {
+    reportClientLog(gwName, "no-smxproxy", "not running inside SmartConsole");
     return Promise.resolve(false);
   }
   if (!gwVersion || !gwName) {
     reportClientLog(gwName, "missing-basics", "gwVersion=" + gwVersion + " gwName=" + gwName);
     return Promise.resolve(false);
   }
-  return fetchInstalledTake(mgmtApi, gwName)
+  return fetchInstalledTake(gwName)
     .then(function (take) { return submitReport(gwName, gwVersion, take); })
     .then(function (result) { return !!(result && result.ok); })
     .catch(function (err) {
-      reportClientLog(gwName, "fetch-failed", (err && err.message) || String(err));
+      reportClientLog(gwName, "call-failed", (err && err.message) || String(err));
       console.error("Auto-detection failed, falling back to manual self-report:", err);
       return false;
     });
 }
 
-function fetchAdvisories(uid, name, mgmtApi, gwVersion, allowAutoDetect) {
+function fetchAdvisories(uid, name, gwVersion, allowAutoDetect) {
   var url = "/api/gateway/" + encodeURIComponent(uid) + "/advisories";
   if (name) {
     // name lets the server fall back to self-reported data (gateway-report.sh,
@@ -285,11 +310,11 @@ function fetchAdvisories(uid, name, mgmtApi, gwVersion, allowAutoDetect) {
     .then(function (resp) { return resp.json(); })
     .then(function (data) {
       if (data.unknown && allowAutoDetect) {
-        tryAutoDetect(mgmtApi, gwVersion, name).then(function (detected) {
+        tryAutoDetect(gwVersion, name).then(function (detected) {
           if (detected) {
             // Re-fetch now that a report exists; don't attempt auto-detection
             // again even if this second call somehow still comes back unknown.
-            fetchAdvisories(uid, name, mgmtApi, gwVersion, false);
+            fetchAdvisories(uid, name, gwVersion, false);
           } else {
             removeLoader();
             showUnknownBanner();
@@ -318,10 +343,7 @@ function onContext(obj) {
     return;
   }
   var gw = objects[0];
-  // Present (with a usable sid) only when extension.json requested
-  // "get-read-only-session" and SmartConsole granted it for this session.
-  var mgmtApi = obj["management-server-api"];
-  fetchAdvisories(gw.uid, gw.name, mgmtApi, gw.version, true);
+  fetchAdvisories(gw.uid, gw.name, gw.version, true);
 }
 
 function removeLoader() {

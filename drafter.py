@@ -33,23 +33,28 @@ def render_body(result: MatchResult) -> str:
             blades = ", ".join(gw.blades) if gw.blades else "none listed"
             gap = result.gateway_take_gap.get(gw.uid)
             required_only = result.gateway_required_take.get(gw.uid)
+            take_source = result.gateway_take_source.get(gw.uid)
+            # "latest" means the number is Check Point's own latest available Take
+            # for this version, not just whatever Take happens to fix this one CVE.
+            is_latest = take_source == "latest"
             # "inferred" means we only had the vulnerability threshold, so the number
             # is a lower bound, not the published fix Take -- never state it flatly.
-            inferred = result.gateway_take_source.get(gw.uid) == "inferred"
+            inferred = take_source == "inferred"
             caveat = (" — this is the lowest Take above the vulnerable range, not a "
                        "confirmed fix Take; check the advisory below for the exact "
                        "Jumbo Hotfix Accumulator that carries the fix") if inferred else ""
+            action = "update to the latest Jumbo Hotfix Accumulator" if is_latest else "install Jumbo Hotfix Accumulator"
             if gw.uid in result.eos_gateway_uids:
                 lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}: "
                               f"end-of-support version, no Jumbo Hotfix fixes this — upgrade required")
             elif gap:
                 installed, required = gap
                 lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}: "
-                              f"install Jumbo Hotfix Accumulator Take {required} or above "
+                              f"{action} Take {required} or above "
                               f"(currently installed: Take {installed}){caveat}")
             elif required_only is not None:
                 lines.append(f"- **{gw.name}** — version {gw.version or 'unknown'}: "
-                              f"install Jumbo Hotfix Accumulator Take {required_only} or above — "
+                              f"{action} Take {required_only} or above — "
                               f"installed Take couldn't be confirmed automatically "
                               f"(enable ENABLE_HOTFIX_CHECK to confirm){caveat}")
             else:

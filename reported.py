@@ -26,18 +26,21 @@ import time
 
 import cpadvisories
 import feeds
+import jhf_latest
 import matcher
 import skfix
 import store
 from assets import Gateway
 
-# Everything in this module runs inside a dashboard request, so sk-article lookups
-# must be served from cache or skipped -- never fetched inline. An uncached article
-# costs an HTTP timeout plus a retry delay, and a gateway needing ten of them made
-# the Advisories tab hang for over a minute (measured live: 60s+ uncached vs 0.3s
-# cached). A cache miss now degrades instantly to the approximate threshold value
-# instead. `main.py check` runs without this flag and is what fills the cache.
+# Everything in this module runs inside a dashboard request, so sk-article and
+# JHF-downloads-page lookups must be served from cache or skipped -- never
+# fetched inline. An uncached article costs an HTTP timeout plus a retry delay,
+# and a gateway needing ten of them made the Advisories tab hang for over a
+# minute (measured live: 60s+ uncached vs 0.3s cached). A cache miss now
+# degrades instantly to the next-best available Take value instead.
+# `main.py check` runs without this flag and is what fills both caches.
 skfix.CACHE_ONLY = True
+jhf_latest.CACHE_ONLY = True
 
 _REPORTS_PATH = os.path.join(os.path.dirname(__file__), "reported.json")
 _VERSION_RE = re.compile(r"^R\d+(\.\d+)*$")

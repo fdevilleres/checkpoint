@@ -197,23 +197,27 @@ Setup on their side:
 
 ### Why the tab doesn't just detect this itself
 
-It partially does. The extension requests `details-level: full` and the `get-read-only-session`
-permission, so it always has the gateway's **version** for free — no network call, straight off the
-`get-context` response. It also *attempts* to read the installed **Take** the same way, by calling
-`show-software-packages-per-targets` directly against the tester's own management server, using the
-read-only session SmartConsole grants their login.
+It mostly does. The extension requests `details-level: full`, so it always has the gateway's
+**version** for free — no network call, straight off the `get-context` response. It also attempts to
+read the installed **Take** the same way, via `show-software-packages-per-targets`.
 
-Confirmed live against a real, correctly-configured SmartConsole session (permission approved,
-context populated with a valid `sid`/version): that direct Take fetch fails with `Failed to fetch`.
-Browsers collapse two distinct failures into that one generic message, and either is plausible here
-and outside this tool's control: the Management API very likely doesn't send CORS headers permitting
-a cross-origin request from this extension's origin, and/or the tester's management server uses a
-self-signed certificate a browser `fetch()` has no way to trust (the `certificate-fingerprint` data
-SmartConsole provides isn't a browser-usable trust-pinning mechanism). This is left in as a
-best-effort attempt — it fails fast and falls back safely, and may work in an environment with a
-CA-trusted certificate — but `gateway-report.sh` remains the reliable path for the installed Take on
-a foreign management server. Failures are visible in `client_diagnostics.log` via `/api/client-log`
-if you want to confirm which failure mode a given tester hit.
+That call used to go through a direct browser `fetch()` to the tester's own management server, using
+the `get-read-only-session` permission's `sid`. Confirmed live against a real, correctly-configured
+SmartConsole session: it always failed with `Failed to fetch` — the Management API doesn't send
+`Access-Control-Allow-Origin` headers, so every cross-origin browser request is CORS-blocked
+regardless of certificate trust or anything else client-side. No fix existed on our side of that
+call.
+
+Fixed by not making a browser request at all: the extension now also requests
+`run-read-only-commands` and calls `show-software-packages-per-targets` through `smxProxy`'s
+`run-readonly-command` bridge instead of `fetch()`. That runs the command inside the native
+SmartConsole host under the tester's own session and returns the result by callback — no
+cross-origin HTTP request ever happens, so CORS never applies. (Found by inspecting a working
+third-party SmartConsole extension that reads Jumbo Hotfix Take the same way, then verified the
+`smxProxy.sendRequest("run-readonly-command", {command, parameters}, callbackName)` call shape
+directly in its source.) `gateway-report.sh` remains the fallback for older SmartConsole clients or
+if the permission isn't granted. Failures are visible in `client_diagnostics.log` via
+`/api/client-log` if you want to confirm which failure mode a given tester hit.
 
 This path matches live at request time (not persisted into the shared `state.json`) against the
 same Check Point advisory feed + NVD fallback the polled path uses, so results are consistent

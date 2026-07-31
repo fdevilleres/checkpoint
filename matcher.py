@@ -16,6 +16,7 @@ from assets import Gateway
 from feeds import Advisory, CpeRange
 import cpadvisories
 import hotfix
+import jhf_latest
 import skfix
 
 _CP_RELEVANT_PRODUCTS_LOWER = {p.lower() for p in cpadvisories.DEFAULT_RELEVANT_PRODUCTS}
@@ -57,15 +58,22 @@ class MatchResult:
     # to compare it against. Still attributable to this specific gateway, unlike a
     # generic "needs review" with no gateway attached.
     gateway_required_take: dict[str, int] = field(default_factory=dict)
-    # gateway uid -> "sk" | "inferred", where the required Take above came from:
+    # gateway uid -> "latest" | "sk" | "inferred", where the required Take above
+    # came from:
+    #   "latest"   - Check Point's own JHF downloads page for this version
+    #                (jhf_latest.py). Preferred whenever available: this tool always
+    #                points at the newest available Take, not just whatever Take
+    #                happens to fix one CVE, so an org already ahead of a CVE's fix
+    #                Take on general hotfixes isn't told to chase an old number.
     #   "sk"       - the sk-article's Solution section table ("The fix is included in
-    #                these Jumbo Hotfix Accumulators"). Authoritative; state it plainly.
-    #   "inferred" - only the vulnerability threshold was available, so the required
-    #                Take is a lower bound (threshold + 1), NOT a known fix Take.
-    # These differ in practice: for CVE-2026-50751 on R82.10 the threshold is Take 19
-    # but the fix only shipped in Take 24, so "threshold + 1" would name a Take that
-    # does not contain the fix. Callers must not present an "inferred" value as the
-    # Take to install.
+    #                these Jumbo Hotfix Accumulators"). Used when the JHF downloads
+    #                page couldn't be read. Authoritative for THIS CVE; state it plainly.
+    #   "inferred" - neither of the above was available, so the required Take is a
+    #                lower bound (threshold + 1), NOT a known fix Take.
+    # These differ in practice: for CVE-2026-50751 on R82.10 the vulnerability
+    # threshold is Take 19 but the fix only shipped in Take 24, so "threshold + 1"
+    # would name a Take that does not contain the fix. Callers must not present an
+    # "inferred" value as a confirmed Take to install.
     gateway_take_source: dict[str, str] = field(default_factory=dict)
 
 
@@ -120,11 +128,9 @@ def _match_via_cp_advisory(adv: Advisory, gateways: list[Gateway], client, targe
     """Top-priority path: Check Point's own structured Security Advisories API
     (cpadvisories.py) gives exact per-version Take cutoffs -- far more precise and
     reliable to fetch than scraping individual sk articles (no WAF-challenge risk,
-    confirmed live). Returns None only if this advisory has no rows for any product
-    this tool tracks at all (relevant_products_lower) -- once it's confirmed relevant,
-    always returns a MatchResult (even an ambiguous one, with sk_url attached) rather
-    than silently deferring to a fallback that has no idea this CVE is Check
-    Point-relevant.
+    confirmed live). Once it's confirmed relevant, always returns a MatchResult
+    (even an ambiguous one, with sk_url attached) rather than silently deferring
+    to a fallback that has no idea this CVE is Check Point-relevant.
 
     A gateway version with no matching row in this advisory's table is treated as
     "not yet assessed" (contributes nothing either way), not "confirmed clean" --
@@ -133,7 +139,18 @@ def _match_via_cp_advisory(adv: Advisory, gateways: list[Gateway], client, targe
     """
     relevant = [r for r in adv.cp_advisory_rows if r.product_name.lower() in relevant_products_lower]
     if not relevant:
-        return None
+        # Check Point's own feed enumerates EVERY affected product for this CVE
+        # (that's what cp_advisory_rows is), and none of them are gateway/
+        # management-server products -- e.g. a Harmony SASE or SmartConsole-only
+        # advisory. That's a confident "not applicable to what this tool tracks",
+        # not an unresolved case -- returning None here previously let it fall
+        # through to the generic needs_review catch-all in match(), so a client-
+        # side-only CVE nagged every gateway's "needs manual review" section
+        # forever. Confirmed live: CVE-2025-9142 (Harmony SASE Windows client,
+        # sk184557) had exactly one row, "Harmony SASE", and no other product at
+        # all -- there was never any ambiguity to review.
+        return MatchResult(advisory=adv, matched_gateways=[], resolved_not_applicable=True,
+                            sk_url=adv.source_url)
 
     rows_by_version: dict[str, list] = {}
     for r in relevant:
@@ -173,6 +190,7 @@ def _match_via_cp_advisory(adv: Advisory, gateways: list[Gateway], client, targe
         unconfirmed_source: str | None = None
         has_unconfirmed_generic = False
         gw_never = False
+        gw_patched = False
 
         for row in rows:
             if row.status == cpadvisories.RowStatus.NEVER_VULNERABLE:
@@ -184,7 +202,10 @@ def _match_via_cp_advisory(adv: Advisory, gateways: list[Gateway], client, targe
                 # Two different numbers, never interchangeable:
                 #   threshold - highest Take still VULNERABLE (structured feed)
                 #   fix_take  - Take that CONTAINS THE FIX (sk Solution section)
-                # Only fix_take may be presented as "install this".
+                # Only fix_take may be presented as "install this". VULNERABILITY is
+                # decided against fix_take (or the inferred fallback) below -- never
+                # against display_required, which exists purely to say "and here's
+                # what to actually install" once we already know a gap exists.
                 threshold = row.max_vulnerable_take
                 fix_take = sk_fix_takes.get(gw_version)
                 if fix_take is not None:
@@ -192,22 +213,42 @@ def _match_via_cp_advisory(adv: Advisory, gateways: list[Gateway], client, targe
                 else:
                     required, source = threshold + 1, "inferred"
 
+                # Point at the latest available Take rather than just the Take that
+                # happens to fix this one CVE -- an org already ahead of `required`
+                # on general hotfixes shouldn't be told to chase an old, superseded
+                # number. Only takes effect when it's actually >= required: a stale or
+                # unreadable JHF downloads page must never recommend a LOWER Take
+                # than the one confirmed to contain the fix.
+                latest_info = jhf_latest.fetch_latest_take(gw_version)
+                if latest_info and latest_info.latest_take is not None and latest_info.latest_take >= required:
+                    display_required, display_source = latest_info.latest_take, "latest"
+                else:
+                    display_required, display_source = required, source
+
                 if enable_hotfix_check and client is not None and (gw.target or target):
                     if gw.uid not in take_cache:
                         take_cache[gw.uid] = hotfix.get_installed_jhf_take(client, gw.target or target, gw.name)
                     installed = take_cache[gw.uid]
                     if installed is None:
-                        unconfirmed_required, unconfirmed_source = required, source
+                        unconfirmed_required, unconfirmed_source = display_required, display_source
                     elif installed < required:
                         confirmed_vulnerable = True
-                        take_gap[gw.uid] = (installed, required)
-                        take_source[gw.uid] = source
-                    # else: installed >= required -> the fix is present
+                        take_gap[gw.uid] = (installed, display_required)
+                        take_source[gw.uid] = display_source
+                    else:
+                        # installed >= required -> the fix is already present. Must be
+                        # recorded, not just skipped: previously this fell through to
+                        # no outcome at all, so a fully patched gateway with a known
+                        # installed Take landed in the same "needs_review" bucket as a
+                        # genuinely ambiguous one -- confirmed live the moment Take
+                        # auto-detection started actually returning real values instead
+                        # of always failing closed.
+                        gw_patched = True
                 else:
                     # Installed Take unknown, but the required Take for THIS gateway's
                     # exact version is -- a real, attributable finding, not a generic
                     # "could apply somewhere" ambiguity.
-                    unconfirmed_required, unconfirmed_source = required, source
+                    unconfirmed_required, unconfirmed_source = display_required, display_source
             else:  # NEEDS_MANUAL_CHECK -- relevant to this gateway, but no numeric data
                 has_unconfirmed_generic = True
 
@@ -219,7 +260,10 @@ def _match_via_cp_advisory(adv: Advisory, gateways: list[Gateway], client, targe
             take_source[gw.uid] = unconfirmed_source
         elif has_unconfirmed_generic:
             matched.append(gw)
-        elif gw_never:
+        elif gw_never or gw_patched:
+            # Both mean "checked, no action needed" -- never vulnerable at this
+            # version, or vulnerable in principle but the installed Take already
+            # contains the fix. Same resolved_not_applicable outcome either way.
             any_never = True
 
     if not matched and not any_never:
@@ -311,6 +355,13 @@ def _match_via_sk(adv: Advisory, gateways: list[Gateway], client, target: str,
             continue
         if gw_version in sk_info.fix_takes:
             required = sk_info.fix_takes[gw_version]
+            # Same "point at latest, not just this CVE's fix Take" preference as
+            # _match_via_cp_advisory -- see gateway_take_source's docstring.
+            latest_info = jhf_latest.fetch_latest_take(gw_version)
+            if latest_info and latest_info.latest_take is not None and latest_info.latest_take >= required:
+                display_required, display_source = latest_info.latest_take, "latest"
+            else:
+                display_required, display_source = required, "sk"  # straight from the Solution section table
             if gw.uid not in take_cache:
                 take_cache[gw.uid] = hotfix.get_installed_jhf_take(client, gw.target or target, gw.name)
             installed = take_cache[gw.uid]
@@ -318,8 +369,8 @@ def _match_via_sk(adv: Advisory, gateways: list[Gateway], client, target: str,
                 any_ambiguous = True
             elif installed < required:
                 vulnerable.append(gw)
-                take_gap[gw.uid] = (installed, required)
-                take_source[gw.uid] = "sk"  # straight from the Solution section table
+                take_gap[gw.uid] = (installed, display_required)
+                take_source[gw.uid] = display_source
             # else: installed >= required -> already patched, no action for this gateway
         elif gw_version in sk_info.affected_versions:
             # In scope per Check Point's own metadata, but this article gives no
