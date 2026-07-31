@@ -177,9 +177,23 @@ function parseInstalledTake(packages) {
  * a foreign management server anyway. Requires "get-read-only-session" in
  * extension.json's requested-permissions; api comes from the get-context
  * response's "management-server-api" field.
+ *
+ * api.url's own convention is undocumented, and confirmed live to already
+ * include "/web_api" (a naive "+ /web_api/<command>" produced a real, logged
+ * ".../web_api/web_api/show-..." request that could only ever 404/CORS-fail
+ * regardless of the server's actual policy) -- so this only appends it when
+ * not already present, tolerating a trailing slash either way.
  */
+function apiCommandUrl(baseUrl, command) {
+  var base = (baseUrl || "").replace(/\/+$/, "");
+  if (!/\/web_api$/i.test(base)) {
+    base += "/web_api";
+  }
+  return base + "/" + command;
+}
+
 function fetchInstalledTake(api, gatewayName) {
-  return fetch(api.url + "/web_api/show-software-packages-per-targets", {
+  return fetch(apiCommandUrl(api.url, "show-software-packages-per-targets"), {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-chkp-sid": api.sid },
     body: JSON.stringify({ targets: [gatewayName], display: { installed: "yes" } })
