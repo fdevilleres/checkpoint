@@ -16,12 +16,13 @@ CVE data, so only do this on a network you trust.
 
 from __future__ import annotations
 import os
+import ssl
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 load_dotenv()
 
 from flask import Flask, jsonify, request, send_from_directory
-from werkzeug.serving import WSGIRequestHandler
+from werkzeug.serving import WSGIRequestHandler, generate_adhoc_ssl_context
 
 import reported
 import store
@@ -133,8 +134,20 @@ if __name__ == "__main__":
     if SSL_CERT_FILE and SSL_KEY_FILE:
         ssl_context = (SSL_CERT_FILE, SSL_KEY_FILE)
     else:
-        ssl_context = "adhoc"  # self-signed — fine per Check Point's own docs, but expect a
-                                # cert-trust prompt for anyone besides you on localhost
+        # Self-signed, same cert Werkzeug's "adhoc" shorthand would generate -- but
+        # built explicitly so the TLS version range can be pinned. Confirmed live: a
+        # Check Point gateway's embedded curl_cli/OpenSSL build (used by
+        # gateway-report.sh, run ON the gateway) fails outbound TLS 1.3 against the
+        # default adhoc context with SSL_ERROR_SYSCALL mid-handshake -- TCP connects,
+        # ClientHello goes out, then the connection just drops, no clean TLS alert.
+        # Forcing --tlsv1.2 on the client fixed it immediately, so capping both min
+        # and max to TLS 1.2 here avoids the whole class of "some client's TLS 1.3
+        # stack doesn't interop with ours" for every future gateway/tester, at no
+        # real cost given this is already an unauthenticated internal tool.
+        ssl_context = generate_adhoc_ssl_context()
+        ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        ssl_context.maximum_version = ssl.TLSVersion.TLSv1_2
+        # expect a cert-trust prompt for anyone besides you on localhost either way
 
     print(f"Serving SmartConsole extension + API on https://{BIND_HOST}:{PORT}")
     print(f"Install in SmartConsole with manifest URL: https://{PUBLIC_HOST}:{PORT}/extension.json")
